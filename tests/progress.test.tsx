@@ -122,6 +122,7 @@ function world(on: On, o: { sessionId?: string; store?: Record<string, unknown> 
     return { value: undefined }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', (_, e) => ({ sessionId: e.sessionId }))
 
   return { store, toasts, opened, clock, commands }
 }
@@ -362,6 +363,79 @@ test('a new session does not carry the list the last one was drawing', async ($,
   const ui = await $.ui.mount(pane('terminal'))
   expect(await ui.find({ type: 'Text', text: /동네 빵집 홈페이지 만들기/ })).toBeUndefined()
   await ui.unmount()
+})
+
+// /resume 과 /clear 는 같은 프로그램 안에서 세션 id 만 바꾸고 session.start 는 부르지 않는다.
+// 2026-11-18: 새 창(NEW)으로 켜서 지난 대화(OLD)의 목록을 이어받은 뒤 /resume 으로 OLD 에 돌아갔더니,
+// 목록이 계속 NEW 이름으로 저장되다가 mod 를 다시 불러온 순간 사라졌다.
+test('after /resume the list is kept under the session the window now is, and survives a reload', async ($, on) => {
+  const ids: { sessionId: string; store: Record<string, unknown> } = {
+    sessionId: 'NEW',
+    store: { [`board:${ROOT_KEY}:OLD`]: entry('OLD', T0 - 10 * MIN, savedBoard('지난 작업', false)) },
+  }
+  const w = world(on, ids)
+  await $.session.start(START)
+  await $.session.end({ reason: 'resume', sessionId: 'NEW', resume: { id: 'NEW' } })
+  ids.sessionId = 'OLD'
+
+  await $.tool.call(tool(PLAN))
+  const saved = w.store.get(`board:${ROOT_KEY}:OLD`) as BoardEntry | undefined
+  expect(saved?.board.title).toBe('동네 빵집 홈페이지 만들기')
+
+  await $.session.start(START) // mod 를 다시 불러옴
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /동네 빵집 홈페이지 만들기/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('after /resume the window gets back the list it had, even with no prompt in between', async ($, on) => {
+  const ids: { sessionId: string; store: Record<string, unknown> } = {
+    sessionId: 'NEW',
+    store: { [`board:${ROOT_KEY}:OLD`]: entry('OLD', T0 - 10 * MIN, savedBoard('지난 작업', false)) },
+  }
+  const w = world(on, ids)
+  await $.session.start(START) // NEW 가 OLD 의 목록을 이어받는다
+  await $.session.end({ reason: 'resume', sessionId: 'NEW', resume: { id: 'NEW' } })
+  ids.sessionId = 'OLD'
+  await w.clock.advance(2 * MIN) // 다음 살아 있음 표시까지
+
+  expect((w.store.get(`board:${ROOT_KEY}:OLD`) as BoardEntry | undefined)?.board.title).toBe('지난 작업')
+  expect(w.store.has(`board:${ROOT_KEY}:NEW`)).toBe(false)
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /지난 작업/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('after /resume to a conversation with its own list, that list is shown', async ($, on) => {
+  const ids: { sessionId: string; store: Record<string, unknown> } = {
+    sessionId: 'NEW',
+    store: { [`board:${ROOT_KEY}:OLD`]: entry('OLD', T0 - 30 * SEC, savedBoard('그 대화의 작업', false)) },
+  }
+  const w = world(on, ids)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.session.end({ reason: 'resume', sessionId: 'NEW', resume: { id: 'NEW' } })
+  ids.sessionId = 'OLD'
+
+  const r = await $.tool.call(tool({ action: 'show' }))
+  expect(String(r.result)).toMatch(/그 대화의 작업/)
+  expect((w.store.get(`board:${ROOT_KEY}:NEW`) as BoardEntry | undefined)?.board.title).toBe('동네 빵집 홈페이지 만들기')
+})
+
+test('after /clear the new conversation does not show the last list', async ($, on) => {
+  const ids: { sessionId: string } = { sessionId: 'S1' }
+  const w = world(on, ids)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.session.end({ reason: 'clear', sessionId: 'S1', resume: { id: 'S1' } })
+  ids.sessionId = 'S2'
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /동네 빵집 홈페이지 만들기/ })).toBeUndefined()
+  await ui.unmount()
+  await $.tool.call(tool({ action: 'plan', title: '새 일', steps: [{ id: 'n', label: '새 단계' }] }))
+  expect((w.store.get(`board:${ROOT_KEY}:S2`) as BoardEntry | undefined)?.board.title).toBe('새 일')
+  expect((w.store.get(`board:${ROOT_KEY}:S1`) as BoardEntry | undefined)?.board.title).toBe('동네 빵집 홈페이지 만들기')
 })
 
 test('planning the same work again keeps what was done', async ($, on) => {

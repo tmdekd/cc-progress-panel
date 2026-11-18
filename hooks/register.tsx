@@ -30,6 +30,7 @@ const owner = atom({ plugin: 'progress-panel', key: 'owner' } as const, '')
 
 // 다시 불러오면 처음으로 돌아가는 값들. session.start 가 다시 채운다.
 let me: { root: string; sid: string } | undefined
+let switching: Promise<void> | undefined
 let ticker: { timer: Timer; ms: number } | undefined
 let beat: Timer | undefined
 let pendingNotice: string | undefined
@@ -346,18 +347,43 @@ function buildSteps(input: StepInput[], old: Board | null, t: number): Step[] {
 // ── 상태 쓰기 ─────────────────────────────────────────
 
 // 이 창의 폴더·세션 id. 다시 불러온 직후 session.start 보다 먼저 도구가 불려도 여기서 채운다.
+// 세션 id 는 부를 때마다 다시 읽는다. /resume·/clear 는 같은 프로그램 안에서 id 만 바꾸고 session.start 를
+// 부르지 않으므로, 바뀐 것을 여기서 알아채 새 세션의 목록을 고른다(2026-11-18 /resume 뒤 목록이 사라진 일).
 async function whoAmI($: EngineInterface): Promise<{ root: string; sid: string }> {
-  if (me) return me
+  if (switching) await switching
   const sid = await $.session.id()
+  if (me && me.sid === sid) return me
+  const before = me
   const root = (await $.session.root()).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
   me = { root, sid }
+  if (before && before.sid !== sid) {
+    const who = me
+    switching = switchTo($, who).finally(() => {
+      switching = undefined
+    })
+    await switching
+  }
   return me
 }
 
+// 같은 프로그램 안에서 다른 세션이 되었다. 앞 세션의 목록은 그 세션 이름으로 저장소에 남겨 두고,
+// 새 세션은 session.start 처럼 제 목록 → 꺼진 창(/resume 으로 끝난 앞 세션 포함)의 목록 → 없음 순서로 고른다.
+async function switchTo($: EngineInterface, who: { root: string; sid: string }): Promise<void> {
+  const t = await $.clock.now()
+  await update($, owner, () => who.sid)
+  await update($, board, () => null)
+  const picked = await pick($, who.root, who.sid, t)
+  await update($, board, cur => cur ?? picked?.board ?? null)
+  await update($, now, () => t)
+  pendingNotice = picked?.adopted ? notice(picked.board) : undefined
+  await syncTicker($)
+  if (picked && !allFinal(picked.board)) await $.ui.open(OPEN)
+}
+
 async function save($: EngineInterface, b: Board | null, t: number): Promise<void> {
+  const who = await whoAmI($)
   await update($, board, () => b)
   await update($, now, () => t)
-  const who = await whoAmI($)
   const key = `board:${who.root}:${who.sid}`
   if (b) {
     const saved: BoardEntry = { root: who.root, sessionId: who.sid, lastSeen: t, board: b }
@@ -406,11 +432,13 @@ async function raise($: EngineInterface, fresh: { kind: AlertKind; text: string 
 }
 
 async function heartbeat($: EngineInterface): Promise<void> {
+  if (!me) return
+  const who = await whoAmI($)
   const b = await read($, board)
-  if (!b || !me) return
+  if (!b) return
   const t = await $.clock.now()
-  const saved: BoardEntry = { root: me.root, sessionId: me.sid, lastSeen: t, board: b }
-  await $.store.set(`board:${me.root}:${me.sid}`, saved)
+  const saved: BoardEntry = { root: who.root, sessionId: who.sid, lastSeen: t, board: b }
+  await $.store.set(`board:${who.root}:${who.sid}`, saved)
 }
 
 // 이 창의 목록을 고른다: 같은 세션 → 꺼진 창의 가장 최근 목록 → 없음.
@@ -503,12 +531,30 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // /resume·/clear 로 이 세션이 끝나고 같은 프로그램이 다른 세션으로 이어진다(session.start 는 오지 않는다).
+  // 끝나는 세션의 목록은 저장소에 그대로 두고 패널에서만 내린다. /resume 이면 그 목록을 꺼진 창의 것으로 표시해
+  // 돌아간 세션이 제 목록이 없을 때 바로 이어받게 한다(NEW 로 켜서 OLD 의 목록을 가져온 뒤 OLD 로 돌아간 경우).
+  on('session.end', async ($, e, next) => {
+    if ((e.reason === 'resume' || e.reason === 'clear') && me && e.sessionId === me.sid) {
+      if (e.reason === 'resume') {
+        const key = `board:${me.root}:${me.sid}`
+        const saved = (await $.store.get(key)) as BoardEntry | undefined
+        if (saved?.board) await $.store.set(key, { ...saved, lastSeen: 0 })
+      }
+      await update($, board, () => null)
+      pendingNotice = undefined
+      await syncTicker($)
+    }
+    return next(e)
+  }).catch(($, e, next) => next(e)) // 실패해도 세션은 그대로 끝난다.
+
   // Claude가 부르는 도구. 권한 확인 앞(tool.call)에서 답해 자리를 비운 밤에도 묻지 않는다.
   on('tool.call', { tool: 'mcp__progress-panel__progress' }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: '서브 에이전트는 진행 상황 패널을 고치지 않습니다. 메인 대화에서만 씁니다.' }
     }
     const a = e as unknown as Record<string, unknown>
+    await whoAmI($) // 세션이 바뀌었으면 먼저 새 세션의 목록으로 바꾼다.
     const t = await $.clock.now()
     const current = await read($, board)
 
@@ -604,6 +650,7 @@ export const register: Register = on => {
       await syncTicker($)
       return next(e)
     }
+    await whoAmI($) // /resume 바로 뒤의 첫 입력이면 여기서 새 세션의 목록을 고르고, 이어받았으면 안내를 붙인다.
     if (pendingNotice) {
       const note = pendingNotice
       pendingNotice = undefined
