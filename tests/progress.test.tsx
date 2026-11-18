@@ -18,18 +18,18 @@ const TYPED = { origin: { kind: 'composer' }, presentation: { isFullscreen: true
 
 const PLAN = {
   action: 'plan',
-  title: '데모 재계획',
+  title: '동네 빵집 홈페이지 만들기',
   steps: [
-    { id: 'a', label: '준비' },
+    { id: 'a', label: '사진 모으기' },
     {
       id: 'b',
-      label: 'DB',
+      label: '화면',
       children: [
-        { id: 'b1', label: '표 정의' },
-        { id: 'b2', label: '적재' },
+        { id: 'b1', label: '메뉴 화면' },
+        { id: 'b2', label: '주문 화면' },
       ],
     },
-    { id: 'c', label: '에이전트' },
+    { id: 'c', label: '공개하기' },
   ],
 }
 
@@ -140,10 +140,10 @@ test('plan draws every step with its mark and the count, on terminal and desktop
   expect(w.opened).toContain('progress')
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(pane(surface))
-    expect(await ui.find({ type: 'Text', text: /데모 재계획/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /▶ 준비/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /· DB/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /· 표 정의/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /동네 빵집 홈페이지 만들기/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /▶ 사진 모으기/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /· 화면/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /· 메뉴 화면/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /0\/4 단계/ })).toBeDefined()
     await ui.unmount()
   }
@@ -158,12 +158,12 @@ test('a finished step shows how long it took and raises a green box above the pr
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /✓ 준비.*42분/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✓ 사진 모으기.*42분/ })).toBeDefined()
   await ui.unmount()
 
   for (const surface of SURFACES) {
     const b = await $.ui.mount(band(surface))
-    expect(await b.find({ type: 'Text', text: /^✓ 준비 끝 \(42분\)$/ })).toBeDefined()
+    expect(await b.find({ type: 'Text', text: /^✓ 사진 모으기 끝 \(42분\)$/ })).toBeDefined()
     const box = await b.find({ type: 'Box', key: 'alert' })
     expect(box?.props.borderStyle).toBe('round')
     expect(box?.props.borderColor).toBe('success')
@@ -181,12 +181,12 @@ test('the box above the prompt goes after 5 seconds', async ($, on) => {
 
   await w.clock.advance(4 * SEC)
   let b = await $.ui.mount(band('terminal'))
-  expect(await b.find({ type: 'Text', text: /준비 끝/ })).toBeDefined()
+  expect(await b.find({ type: 'Text', text: /사진 모으기 끝/ })).toBeDefined()
   await b.unmount()
 
   await w.clock.advance(2 * SEC)
   b = await $.ui.mount(band('terminal'))
-  expect(await b.find({ type: 'Text', text: /준비 끝/ })).toBeUndefined()
+  expect(await b.find({ type: 'Text', text: /사진 모으기 끝/ })).toBeUndefined()
   expect(await b.find({ type: 'Box', key: 'alert' })).toBeUndefined()
   await b.unmount()
 })
@@ -201,13 +201,13 @@ test('several alerts share one box, newest last, each going on its own time', as
 
   let b = await $.ui.mount(band('terminal'))
   const lines = await b.findAll({ type: 'Text', text: /끝/ })
-  expect(lines.map(l => l.text)).toEqual(['✓ 준비 끝', '✓ 표 정의 끝'])
+  expect(lines.map(l => l.text)).toEqual(['✓ 사진 모으기 끝', '✓ 메뉴 화면 끝'])
   await b.unmount()
 
   await w.clock.advance(3 * SEC)
   b = await $.ui.mount(band('terminal'))
-  expect(await b.find({ type: 'Text', text: /준비 끝/ })).toBeUndefined()
-  expect(await b.find({ type: 'Text', text: /표 정의 끝/ })).toBeDefined()
+  expect(await b.find({ type: 'Text', text: /사진 모으기 끝/ })).toBeUndefined()
+  expect(await b.find({ type: 'Text', text: /메뉴 화면 끝/ })).toBeDefined()
   await b.unmount()
 })
 
@@ -229,7 +229,7 @@ test('a long alert is cut to the width above the prompt', async ($, on) => {
   await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked', note: '아주 '.repeat(40) }))
 
   const b = await $.ui.mount(band('terminal', { bodyColumns: 40 }))
-  const line = await b.find({ type: 'Text', text: /에이전트 막힘/ })
+  const line = await b.find({ type: 'Text', text: /공개하기 막힘/ })
   // 테두리 두 칸과 좌우 여백 두 칸을 뺀 폭.
   expect(cells(line?.text ?? '')).toBeLessThanOrEqual(36)
   expect(line?.text.endsWith('…')).toBe(true)
@@ -244,7 +244,7 @@ test('a step in progress shows its time so far', async ($, on) => {
   await w.clock.advance(17 * MIN)
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /▶ 준비.*17분째/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /▶ 사진 모으기.*17분째/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -268,12 +268,12 @@ test('a group follows the steps under it', async ($, on) => {
   await $.tool.call(tool({ action: 'update', id: 'b2', status: 'doing' }))
 
   let ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /▶ DB/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /▶ 화면/ })).toBeDefined()
   await ui.unmount()
 
   await $.tool.call(tool({ action: 'update', id: 'b2', status: 'done' }))
   ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /✓ DB/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✓ 화면/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -281,15 +281,15 @@ test('a blocked step shows its reason and raises a yellow box above the prompt',
   world(on)
   await $.session.start(START)
   await $.tool.call(tool(PLAN))
-  await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked', note: 'LLM 연결 안 됨' }))
+  await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked', note: '도메인 연결 안 됨' }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /⚠ 에이전트/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /LLM 연결 안 됨/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /⚠ 공개하기/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /도메인 연결 안 됨/ })).toBeDefined()
   await ui.unmount()
 
   const b = await $.ui.mount(band('terminal'))
-  const line = await b.find({ type: 'Text', text: /^⚠ 에이전트 막힘: LLM 연결 안 됨$/ })
+  const line = await b.find({ type: 'Text', text: /^⚠ 공개하기 막힘: 도메인 연결 안 됨$/ })
   expect(line?.props.color).toBe('warning')
   expect((await b.find({ type: 'Box', key: 'alert' }))?.props.borderColor).toBe('warning')
   await b.unmount()
@@ -319,7 +319,7 @@ test('a list written before the session has started is still saved', async ($, o
   await $.tool.call(tool(PLAN))
 
   const saved = w.store.get(`board:${ROOT_KEY}:S1`) as BoardEntry | undefined
-  expect(saved?.board.title).toBe('데모 재계획')
+  expect(saved?.board.title).toBe('동네 빵집 홈페이지 만들기')
 })
 
 // 다시 불러오면 session.start 가 또 돈다. 이 세션이 이미 그리고 있는 목록을 저장소의 옛 목록으로 덮지 않는다.
@@ -332,11 +332,11 @@ test('a reload keeps the list the session already has over an older saved one', 
   await $.session.start(START)
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /데모 재계획/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /동네 빵집 홈페이지 만들기/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /옛 목록/ })).toBeUndefined()
   await ui.unmount()
   const saved = w.store.get(`board:${ROOT_KEY}:S1`) as BoardEntry | undefined
-  expect(saved?.board.title).toBe('데모 재계획')
+  expect(saved?.board.title).toBe('동네 빵집 홈페이지 만들기')
 })
 
 // 같은 프로그램 안에서 세션이 바뀌면(/clear 등) 앞 세션이 그리던 목록을 들고 가지 않는다.
@@ -349,7 +349,7 @@ test('a new session does not carry the list the last one was drawing', async ($,
   await $.session.start(START)
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /데모 재계획/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /동네 빵집 홈페이지 만들기/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -363,7 +363,7 @@ test('planning the same work again keeps what was done', async ($, on) => {
   await $.tool.call(tool({ ...PLAN, steps: [...PLAN.steps, { id: 'd', label: '문서' }] }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /✓ 준비.*5분/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✓ 사진 모으기.*5분/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /1\/5 단계/ })).toBeDefined()
   await ui.unmount()
 })
@@ -405,7 +405,7 @@ test('the tool answers with the list so Claude can read the ids', async ($, on) 
   await $.tool.call(tool(PLAN))
   const r = await $.tool.call(tool({ action: 'show' }))
 
-  expect(String(r.result)).toMatch(/데모 재계획/)
+  expect(String(r.result)).toMatch(/동네 빵집 홈페이지 만들기/)
   expect(String(r.result)).toMatch(/b1/)
 })
 
@@ -696,8 +696,14 @@ test('the rules are added to the system prompt, last', async ($, on) => {
   expect(last?.id).toBe('progress-panel:rules')
   expect(last?.scope).toBe('session')
   expect(last?.text).toMatch(/mcp__progress-panel__progress/)
-  // 패널의 실행 중 줄이 읽히도록 명령 설명을 한국어로 짧게 적게 한다.
-  expect(last?.text).toMatch(/description.*한국어/)
+  // 누가 어떤 일을 하든: 할 예정·하는 중·끝남·막힘을 알리고, 일의 종류를 가리지 않는다.
+  expect(last?.text).toMatch(/할 예정/)
+  expect(last?.text).toMatch(/종류와 상관없이/)
+  // 하는 도중 할 일이 바뀌면 같은 제목으로 다시 적어 패널을 실제 진행에 맞춘다.
+  expect(last?.text).toMatch(/같은 title로 다시 "plan"/)
+  // 패널의 실행 중 줄이 읽히도록 명령 설명을 사용자가 쓰는 언어로 짧게 적게 한다(특정 언어로 못 박지 않는다).
+  expect(last?.text).toMatch(/description.*사용자가 쓰는 언어/)
+  expect(last?.text).not.toMatch(/한국어/)
 })
 
 // ── 가독성: 상태마다 색, 단계 사이 빈 줄 ─────────────────
@@ -710,7 +716,7 @@ test('the step in progress stands out in the accent color, on terminal and deskt
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(pane(surface))
-    const label = await ui.find({ type: 'Text', text: /^준비$/ })
+    const label = await ui.find({ type: 'Text', text: /^사진 모으기$/ })
     expect(label?.props.color).toBe('claude')
     expect(label?.props.bold).toBe(true)
     await ui.unmount()
@@ -724,7 +730,7 @@ test('a finished step recedes and its mark is green', async ($, on) => {
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect((await ui.find({ type: 'Text', text: /^준비$/ }))?.props.dimColor).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^사진 모으기$/ }))?.props.dimColor).toBe(true)
   expect((await ui.find({ type: 'Text', text: /^✓$/ }))?.props.color).toBe('success')
   await ui.unmount()
 })
@@ -733,11 +739,11 @@ test('a blocked step and its reason are in the warning color', async ($, on) => 
   world(on)
   await $.session.start(START)
   await $.tool.call(tool(PLAN))
-  await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked', note: 'LLM 연결 안 됨' }))
+  await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked', note: '도메인 연결 안 됨' }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect((await ui.find({ type: 'Text', text: /^에이전트$/ }))?.props.color).toBe('warning')
-  expect((await ui.find({ type: 'Text', text: /LLM 연결 안 됨/ }))?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Text', text: /^공개하기$/ }))?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Text', text: /도메인 연결 안 됨/ }))?.props.color).toBe('warning')
   await ui.unmount()
 })
 
@@ -748,7 +754,7 @@ test('a skipped step is struck through', async ($, on) => {
   await $.tool.call(tool({ action: 'update', id: 'c', status: 'skipped' }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect((await ui.find({ type: 'Text', text: /^에이전트$/ }))?.props.strikethrough).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^공개하기$/ }))?.props.strikethrough).toBe(true)
   await ui.unmount()
 })
 
@@ -758,7 +764,7 @@ test('a group\'s name is bold', async ($, on) => {
   await $.tool.call(tool(PLAN))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect((await ui.find({ type: 'Text', text: /^DB$/ }))?.props.bold).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^화면$/ }))?.props.bold).toBe(true)
   await ui.unmount()
 })
 
