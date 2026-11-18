@@ -1,0 +1,6 @@
+{
+  "name": "progress-panel",
+  "version": "0.1.0",
+  "description": "작업의 전체 단계와 지금 위치, 실행 중인 명령을 채팅 옆 패널에 보여 줍니다",
+  "types": "./types/index.d.ts"
+}

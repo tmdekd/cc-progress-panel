@@ -1,0 +1,58 @@
+// progress-panel 의 상태 계약.
+// 저장소($.store) 키는 `board:<프로젝트 루트(소문자, / 구분)>:<세션 id>` 이고 값은 BoardEntry 다.
+
+export type StepStatus = 'todo' | 'doing' | 'done' | 'blocked' | 'skipped'
+
+export type Step = {
+  id: string
+  label: string
+  status: StepStatus
+  note?: string
+  startedAt?: number
+  endedAt?: number
+  children?: Step[]
+}
+
+export type Board = {
+  title: string
+  steps: Step[]
+  updatedAt: number
+}
+
+export type BoardEntry = {
+  root: string
+  sessionId: string
+  lastSeen: number
+  board: Board
+}
+
+export type Running = {
+  id: string
+  label: string
+  startedAt: number
+  isBackground: boolean
+  taskId?: string
+}
+
+// 입력창 바로 위에 잠깐 뜨는 알림 한 줄. at 부터 5초 동안 보인다.
+export type AlertKind = 'done' | 'blocked' | 'all'
+
+export type Alert = {
+  id: number
+  kind: AlertKind
+  text: string
+  at: number
+}
+
+declare module 'claude-code' {
+  interface PluginState {
+    'progress-panel': {
+      board: Shaped<Board | null>
+      running: Shaped<Running[]>
+      alerts: Shaped<Alert[]>
+      now: number
+      // $.state 의 목록이 어느 세션(id) 것인지.
+      owner: string
+    }
+  }
+}

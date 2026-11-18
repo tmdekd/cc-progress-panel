@@ -1,0 +1,5 @@
+{
+  "name": "cc-progress-panel",
+  "owner": { "name": "tmdekd" },
+  "plugins": [{ "name": "progress-panel", "source": "./" }]
+}
