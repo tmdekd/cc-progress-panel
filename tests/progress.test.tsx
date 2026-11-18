@@ -106,7 +106,11 @@ function world(on: On, o: { sessionId?: string; store?: Record<string, unknown> 
   })
   on('store.keys', () => ({ value: [...store.keys()] }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__progress-panel__${e.name}` } }))
-  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  const commands: { name: string; description: string }[] = []
+  on('command.register', (_, e) => {
+    commands.push({ name: e.name, description: e.description })
+    return { value: { command: e.name } }
+  })
   on('ui.open', (_, e) => {
     opened.push(e.id)
     return { value: { isPlaced: true } }
@@ -119,7 +123,7 @@ function world(on: On, o: { sessionId?: string; store?: Record<string, unknown> 
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
 
-  return { store, toasts, opened, clock }
+  return { store, toasts, opened, clock, commands }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -144,7 +148,11 @@ test('plan draws every step with its mark and the count, on terminal and desktop
     expect(await ui.find({ type: 'Text', text: /▶ 사진 모으기/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /· 화면/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /· 메뉴 화면/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /0\/4 단계/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /0\/4 완료/ })).toBeDefined()
+    // 막대 옆에 같은 숫자(0/4)나 퍼센트를 한 번 더 그리지 않는다.
+    expect(await ui.find({ type: 'Text', text: /^0\/4$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /0\/4 완료\s*\S/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /%/ })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -163,7 +171,7 @@ test('a finished step shows how long it took and raises a green box above the pr
 
   for (const surface of SURFACES) {
     const b = await $.ui.mount(band(surface))
-    expect(await b.find({ type: 'Text', text: /^✓ 사진 모으기 끝 \(42분\)$/ })).toBeDefined()
+    expect(await b.find({ type: 'Text', text: /^✓ 사진 모으기 완료 \(42분 걸림\)$/ })).toBeDefined()
     const box = await b.find({ type: 'Box', key: 'alert' })
     expect(box?.props.borderStyle).toBe('round')
     expect(box?.props.borderColor).toBe('success')
@@ -181,12 +189,12 @@ test('the box above the prompt goes after 5 seconds', async ($, on) => {
 
   await w.clock.advance(4 * SEC)
   let b = await $.ui.mount(band('terminal'))
-  expect(await b.find({ type: 'Text', text: /사진 모으기 끝/ })).toBeDefined()
+  expect(await b.find({ type: 'Text', text: /사진 모으기 완료/ })).toBeDefined()
   await b.unmount()
 
   await w.clock.advance(2 * SEC)
   b = await $.ui.mount(band('terminal'))
-  expect(await b.find({ type: 'Text', text: /사진 모으기 끝/ })).toBeUndefined()
+  expect(await b.find({ type: 'Text', text: /사진 모으기 완료/ })).toBeUndefined()
   expect(await b.find({ type: 'Box', key: 'alert' })).toBeUndefined()
   await b.unmount()
 })
@@ -200,14 +208,14 @@ test('several alerts share one box, newest last, each going on its own time', as
   await $.tool.call(tool({ action: 'update', id: 'b1', status: 'done' }))
 
   let b = await $.ui.mount(band('terminal'))
-  const lines = await b.findAll({ type: 'Text', text: /끝/ })
-  expect(lines.map(l => l.text)).toEqual(['✓ 사진 모으기 끝', '✓ 메뉴 화면 끝'])
+  const lines = await b.findAll({ type: 'Text', text: /완료/ })
+  expect(lines.map(l => l.text)).toEqual(['✓ 사진 모으기 완료', '✓ 메뉴 화면 완료'])
   await b.unmount()
 
   await w.clock.advance(3 * SEC)
   b = await $.ui.mount(band('terminal'))
-  expect(await b.find({ type: 'Text', text: /사진 모으기 끝/ })).toBeUndefined()
-  expect(await b.find({ type: 'Text', text: /메뉴 화면 끝/ })).toBeDefined()
+  expect(await b.find({ type: 'Text', text: /사진 모으기 완료/ })).toBeUndefined()
+  expect(await b.find({ type: 'Text', text: /메뉴 화면 완료/ })).toBeDefined()
   await b.unmount()
 })
 
@@ -229,7 +237,7 @@ test('a long alert is cut to the width above the prompt', async ($, on) => {
   await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked', note: '아주 '.repeat(40) }))
 
   const b = await $.ui.mount(band('terminal', { bodyColumns: 40 }))
-  const line = await b.find({ type: 'Text', text: /공개하기 막힘/ })
+  const line = await b.find({ type: 'Text', text: /공개하기에서 막힘/ })
   // 테두리 두 칸과 좌우 여백 두 칸을 뺀 폭.
   expect(cells(line?.text ?? '')).toBeLessThanOrEqual(36)
   expect(line?.text.endsWith('…')).toBe(true)
@@ -256,7 +264,7 @@ test('the count is of the lowest steps', async ($, on) => {
   await $.tool.call(tool({ action: 'update', id: 'b1', status: 'done' }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /2\/4 단계/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /2\/4 완료/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -281,7 +289,10 @@ test('a blocked step shows its reason and raises a yellow box above the prompt',
   world(on)
   await $.session.start(START)
   await $.tool.call(tool(PLAN))
-  await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked', note: '도메인 연결 안 됨' }))
+  const r = await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked', note: '도메인 연결 안 됨' }))
+  // 도구 결과 글은 막힌 이유를 줄표 없이 괄호로 붙인다.
+  expect(String(r.result)).toMatch(/공개하기 \(도메인 연결 안 됨\)/)
+  expect(String(r.result)).not.toMatch(/—/)
 
   const ui = await $.ui.mount(pane('terminal'))
   expect(await ui.find({ type: 'Text', text: /⚠ 공개하기/ })).toBeDefined()
@@ -289,7 +300,7 @@ test('a blocked step shows its reason and raises a yellow box above the prompt',
   await ui.unmount()
 
   const b = await $.ui.mount(band('terminal'))
-  const line = await b.find({ type: 'Text', text: /^⚠ 공개하기 막힘: 도메인 연결 안 됨$/ })
+  const line = await b.find({ type: 'Text', text: /^⚠ 공개하기에서 막힘: 도메인 연결 안 됨$/ })
   expect(line?.props.color).toBe('warning')
   expect((await b.find({ type: 'Box', key: 'alert' }))?.props.borderColor).toBe('warning')
   await b.unmount()
@@ -303,12 +314,12 @@ test('finishing the last step says that all are done', async ($, on) => {
     await $.tool.call(tool({ action: 'update', id, status: 'done' }))
   }
   let b = await $.ui.mount(band('terminal'))
-  expect(await b.find({ type: 'Text', text: /모든 단계 끝/ })).toBeUndefined()
+  expect(await b.find({ type: 'Text', text: /모든 단계 완료/ })).toBeUndefined()
   await b.unmount()
 
   await $.tool.call(tool({ action: 'update', id: 'c', status: 'skipped' }))
   b = await $.ui.mount(band('terminal'))
-  const all = await b.find({ type: 'Text', text: /^✓ 모든 단계 끝$/ })
+  const all = await b.find({ type: 'Text', text: /^✓ 모든 단계 완료$/ })
   expect(all?.props.bold).toBe(true)
   await b.unmount()
 })
@@ -364,7 +375,7 @@ test('planning the same work again keeps what was done', async ($, on) => {
 
   const ui = await $.ui.mount(pane('terminal'))
   expect(await ui.find({ type: 'Text', text: /✓ 사진 모으기.*5분/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /1\/5 단계/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /1\/5 완료/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -378,7 +389,7 @@ test('a new piece of work starts fresh even where ids repeat', async ($, on) => 
 
   const ui = await $.ui.mount(pane('terminal'))
   expect(await ui.find({ type: 'Text', text: /· 시작/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /0\/2 단계/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /0\/2 완료/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -418,7 +429,7 @@ test('clear empties the panel and the saved list', async ($, on) => {
 
   expect(w.store.has(`board:${ROOT_KEY}:S1`)).toBe(false)
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /진행 중인 단계가 없습니다/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /아직 진행 목록이 없습니다/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -437,6 +448,15 @@ test('/progress opens the pane', async ($, on) => {
   await $.command.run({ command: 'progress', args: '', ...TYPED })
 
   expect(w.opened).toContain('progress')
+})
+
+test('/progress describes itself in plain sentences', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+
+  expect(w.commands.find(c => c.name === 'progress')?.description).toBe(
+    '진행 상황 패널을 열거나 닫습니다. clear를 붙이면 목록을 지웁니다.',
+  )
 })
 
 test('this session\'s saved list comes back and opens the pane', async ($, on) => {
@@ -475,7 +495,7 @@ test('the list of a window still open is left alone', async ($, on) => {
   expect(w.store.has(`board:${ROOT_KEY}:OLD`)).toBe(true)
   const ui = await $.ui.mount(pane('terminal'))
   expect(await ui.find({ type: 'Text', text: /다른 창 작업/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /진행 중인 단계가 없습니다/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /아직 진행 목록이 없습니다/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -549,7 +569,7 @@ test('the running command shows as a plain list item, and then goes', async ($, 
   await call
   ui = await $.ui.mount(pane('terminal'))
   expect(await ui.find({ type: 'Text', text: /pytest/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /대기 중/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /실행 중인 작업 없음/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -638,7 +658,7 @@ test('a subagent\'s commands are left out', async ($, on) => {
 
   const ui = await $.ui.mount(pane('terminal'))
   expect(await ui.find({ type: 'Text', text: /make/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /대기 중/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /실행 중인 작업 없음/ })).toBeDefined()
   await ui.unmount()
   await w.clock.advance(5 * SEC)
   await call
@@ -704,6 +724,10 @@ test('the rules are added to the system prompt, last', async ($, on) => {
   // 패널의 실행 중 줄이 읽히도록 명령 설명을 사용자가 쓰는 언어로 짧게 적게 한다(특정 언어로 못 박지 않는다).
   expect(last?.text).toMatch(/description.*사용자가 쓰는 언어/)
   expect(last?.text).not.toMatch(/한국어/)
+  // 단계 이름과 명령 설명은 문법에 맞게, 한 목록 안에서 같은 꼴로, 한 줄에 한 가지 일만.
+  expect(last?.text).toMatch(/문법에 맞는 자연스러운 말/)
+  expect(last?.text).toMatch(/끝맺는 꼴을 하나로/)
+  expect(last?.text).toMatch(/두 가지 일을 한 줄에 이어 붙이지 않는다/)
 })
 
 // ── 가독성: 상태마다 색, 단계 사이 빈 줄 ─────────────────

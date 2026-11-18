@@ -76,6 +76,7 @@ const RULES = {
     '- 사용자 메시지에 "[진행 상황 패널]" 안내가 붙어 있으면 이 창이 이어받은 목록이 있다는 뜻이다. 지금 하려는 일과 같은 일이면 그 목록을 이어서 update하고, 다른 일이면 plan으로 새로 적는다. action "show"로 지금 목록을 볼 수 있다.',
     '- 다른 할 일 기록 도구를 함께 쓰고 있으면 그 기록도 평소대로 같은 때에 함께 고친다.',
     '- 패널 아래 "실행 중" 칸에는 셸 명령(Bash·PowerShell)의 description이 그대로 보인다. description은 사용자가 쓰는 언어로, 무엇을 하는지 알 수 있게 짧게(15자 안팎) 적는다.',
+    '- label과 description은 그 언어의 문법에 맞는 자연스러운 말로 적는다. 한 목록 안에서는 끝맺는 꼴을 하나로 맞추고, 두 가지 일을 한 줄에 이어 붙이지 않는다.',
     '- 메인 대화에서만 쓴다. 서브 에이전트는 쓰지 않는다.',
   ].join('\n'),
 } as const
@@ -279,7 +280,7 @@ function summary(b: Board | null): string {
   const ls = leaves(b.steps)
   const done = ls.filter(s => isFinal(s.status)).length
   const line = (s: Step, st: StepStatus, pad: string) =>
-    `${pad}- [${st}] ${s.id}: ${s.label}${s.note ? ` — ${s.note}` : ''}`
+    `${pad}- [${st}] ${s.id}: ${s.label}${s.note ? ` (${s.note})` : ''}`
   const lines = [`진행 상황: ${b.title} (${done}/${ls.length} 단계)`]
   for (const s of b.steps) {
     lines.push(line(s, shown(s).status, ''))
@@ -469,7 +470,7 @@ export const register: Register = on => {
     await $.tool.register(SPEC)
     await $.command.register({
       name: 'progress',
-      description: '진행 상황 패널을 열거나 닫습니다 (clear: 목록 지우기)',
+      description: '진행 상황 패널을 열거나 닫습니다. clear를 붙이면 목록을 지웁니다.',
       argumentHint: '[clear]',
     })
 
@@ -563,11 +564,11 @@ export const register: Register = on => {
       const fresh: { kind: AlertKind; text: string }[] = []
       if (status === 'done') {
         const took = step.startedAt !== undefined ? fmt(t - step.startedAt) : ''
-        fresh.push({ kind: 'done', text: `✓ ${step.label} 끝${took ? ` (${took})` : ''}` })
+        fresh.push({ kind: 'done', text: `✓ ${step.label} 완료${took ? ` (${took} 걸림)` : ''}` })
       } else if (status === 'blocked') {
-        fresh.push({ kind: 'blocked', text: `⚠ ${step.label} 막힘${note ? `: ${note}` : ''}` })
+        fresh.push({ kind: 'blocked', text: `⚠ ${step.label}에서 막힘${note ? `: ${note}` : ''}` })
       }
-      if (!wasAllFinal && allFinal(copy)) fresh.push({ kind: 'all', text: '✓ 모든 단계 끝' })
+      if (!wasAllFinal && allFinal(copy)) fresh.push({ kind: 'all', text: '✓ 모든 단계 완료' })
       await raise($, fresh, t)
 
       return { result: summary(copy) }
@@ -682,7 +683,7 @@ export const register: Register = on => {
     if (!b) {
       body.push(
         <Box key="empty" marginBottom={1}>
-          <Text dimColor>진행 중인 단계가 없습니다.</Text>
+          <Text dimColor>아직 진행 목록이 없습니다.</Text>
         </Box>,
       )
     } else {
@@ -692,10 +693,11 @@ export const register: Register = on => {
         <Box key="head" flexDirection="column" marginBottom={1}>
           <Text bold>{cut(b.title, cols)}</Text>
           <Progress
-            label={`${done}/${ls.length} 단계`}
+            label={`${done}/${ls.length} 완료`}
             value={done}
             max={ls.length}
-            valueText={`${done}/${ls.length}`}
+            // 숫자는 label에 이미 있다. 비워 두면 막대 옆에 같은 숫자를 또 그리지 않는다(빼면 퍼센트가 그려진다).
+            valueText=""
             color="success"
           />
         </Box>,
@@ -718,7 +720,7 @@ export const register: Register = on => {
 
     const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
     const callLines: RenderChildren[] = [<Text color="subtle">{'─'.repeat(Math.min(cols, 40))}</Text>]
-    if (visible.length === 0) callLines.push(<Text dimColor>대기 중</Text>)
+    if (visible.length === 0) callLines.push(<Text dimColor>실행 중인 작업 없음</Text>)
     // "- 하는 일" 목록만. 머리말과 걸린 시간은 사용자 요청으로 뺐다(2026-11-18). 백그라운드도 같은 모양.
     for (const c of visible) {
       const name = cut(c.label, cols - 2)
