@@ -35,7 +35,7 @@ const PLAN = {
 
 const SURFACES = ['terminal', 'desktop'] as const
 
-function pane(surface: 'terminal' | 'desktop', bodyColumns = 40) {
+function pane(surface: 'terminal' | 'desktop', bodyColumns = 40, bodyRows = 40) {
   return {
     plugin: 'progress-panel',
     surface,
@@ -46,7 +46,7 @@ function pane(surface: 'terminal' | 'desktop', bodyColumns = 40) {
       isFocused: false,
       bodyColumns,
       placement: 'dock',
-      scroll: { offset: 0, bodyRows: 40 },
+      scroll: { offset: 0, bodyRows },
       view: {},
     },
   } as const
@@ -123,6 +123,8 @@ function world(on: On, o: { sessionId?: string; store?: Record<string, unknown> 
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
 
   return { store, toasts, opened, clock, commands }
 }
@@ -149,10 +151,10 @@ test('plan draws every step with its mark and the count, on terminal and desktop
     expect(await ui.find({ type: 'Text', text: /▶ 사진 모으기/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /· 화면/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /· 메뉴 화면/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /0\/4 완료/ })).toBeDefined()
+    // 완료 수 뒤에는 전체 걸린 시간만 붙는다.
+    expect(await ui.find({ type: 'Text', text: /^0\/4 완료 · 방금 시작\s*$/ })).toBeDefined()
     // 막대 옆에 같은 숫자(0/4)나 퍼센트를 한 번 더 그리지 않는다.
     expect(await ui.find({ type: 'Text', text: /^0\/4$/ })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /0\/4 완료\s*\S/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /%/ })).toBeUndefined()
     await ui.unmount()
   }
@@ -798,9 +800,10 @@ test('the rules are added to the system prompt, last', async ($, on) => {
   // 패널의 실행 중 줄이 읽히도록 명령 설명을 사용자가 쓰는 언어로 짧게 적게 한다(특정 언어로 못 박지 않는다).
   expect(last?.text).toMatch(/description.*사용자가 쓰는 언어/)
   expect(last?.text).not.toMatch(/한국어/)
-  // 단계 이름과 명령 설명은 문법에 맞게, 한 목록 안에서 같은 꼴로, 한 줄에 한 가지 일만.
+  // 단계 이름과 명령 설명은 문법에 맞게, 명사로 끝나는 개조식으로('~하기' 없이), 한 줄에 한 가지 일만.
   expect(last?.text).toMatch(/문법에 맞는 자연스러운 말/)
-  expect(last?.text).toMatch(/끝맺는 꼴을 하나로/)
+  expect(last?.text).toMatch(/명사로 끝나는 짧은 개조식/)
+  expect(last?.text).toMatch(/'~하기'.*끝내지 않는다/)
   expect(last?.text).toMatch(/두 가지 일을 한 줄에 이어 붙이지 않는다/)
 })
 
@@ -873,9 +876,12 @@ test('top-level steps are set apart by a blank row, and the head too', async ($,
   await $.tool.call(tool(PLAN))
 
   const ui = await $.ui.mount(pane('terminal'))
-  for (const id of ['a', 'b', 'c']) {
+  for (const id of ['a', 'b']) {
     expect((await ui.find({ type: 'Box', key: `step-${id}` }))?.props.marginBottom).toBe(1)
   }
+  // 예정은 셋(사진 모으기, 메뉴 화면, 주문 화면)까지만. 넷째(공개하기)는 개수로 적는다.
+  expect(await ui.find({ type: 'Box', key: 'step-c' })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^· 예정 1개 더$/ }))?.props.dimColor).toBe(true)
   expect((await ui.find({ type: 'Box', key: 'head' }))?.props.marginBottom).toBe(1)
   expect((await ui.find({ type: 'Box', key: 'calls' }))?.props.marginTop).toBeUndefined()
   await ui.unmount()
@@ -906,4 +912,386 @@ test('the list mark of a running command is in its own color', async ($, on) => 
   await ui.unmount()
   await w.clock.advance(5 * SEC)
   await call
+})
+
+// ── 2026-11-19 손질: 시간·도구 이름·실행 중 칸·도구 결과 글 ─────────
+
+// 진행 중 시간은 30초마다만 다시 그려져 "0초째"로 멈춰 보였다. 1분 전까지는 "방금 시작"으로 적는다.
+test('a step just started says so instead of counting seconds', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(30 * SEC)
+
+  let ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /▶ 사진 모으기.*방금 시작$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /초째/ })).toBeUndefined()
+  await ui.unmount()
+
+  await w.clock.advance(30 * SEC)
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
+  ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /▶ 사진 모으기.*1분째$/ })).toBeDefined()
+  // 묶음도 아래 단계의 시작 시각을 따른다.
+  expect(await ui.find({ type: 'Text', text: /▶ 화면.*방금 시작$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+// 오래 걸리는 도구를 흉내 낸다: 5초 동안 끝나지 않는다.
+function slow(on: On, w: ReturnType<typeof world>, name: string) {
+  on('tool.call', { tool: name } as Parameters<On>[1] & object, async () => {
+    await w.clock.sleep(5 * SEC)
+    return { result: {} }
+  })
+}
+
+test('tools show plain names: MCP by its tool name, web and skill tools in words', async ($, on) => {
+  const w = world(on)
+  const MEM = 'mcp__plugin_claude-mem_mcp-search__work_state_write'
+  for (const name of [MEM, 'WebSearch', 'WebFetch', 'Skill']) slow(on, w, name)
+  await $.session.start(START)
+  const calls = [
+    $.tool.call({ tool: MEM, list: 'x' } as unknown as CallInput),
+    $.tool.call({ tool: 'WebSearch', query: '빵집' } as unknown as CallInput),
+    $.tool.call({ tool: 'WebFetch', url: 'https://example.com', prompt: '요약' } as unknown as CallInput),
+    $.tool.call({ tool: 'Skill', skill: 'plugin-authoring' } as unknown as CallInput),
+  ]
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const lines = (await ui.findAll({ type: 'Text', text: /^- / })).map(l => l.text)
+  expect(lines).toEqual(['- work_state_write', '- 웹 검색', '- 웹 페이지 읽기', '- 스킬: plugin-authoring'])
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('the running part shows at most five calls and counts the rest', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  const calls = [1, 2, 3, 4, 5, 6, 7].map(n =>
+    $.tool.call({ tool: 'Bash', command: `job ${n}`, description: `작업${n}` } as unknown as CallInput),
+  )
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.findAll({ type: 'Text', text: /^- / })).toHaveLength(5)
+  expect(await ui.find({ type: 'Text', text: /작업6/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /^외 2개$/ }))?.props.dimColor).toBe(true)
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+// 도구 결과 글도 패널과 같은 말("n/m 완료")을 쓴다.
+test('the tool answer counts what is finished in the panel\'s words', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  const r = await $.tool.call(tool(PLAN))
+  expect(String(r.result)).toMatch(/\(0\/4 완료\)/)
+  expect(String(r.result)).not.toMatch(/단계\)/)
+})
+
+// 끝난 묶음은 끝난 단계처럼 물러난다(굵게 하지 않는다).
+test('a finished group is not bold', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'b2', status: 'done' }))
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const name = await ui.find({ type: 'Text', text: /^화면$/ })
+  expect(name?.props.dimColor).toBe(true)
+  expect(name?.props.bold).not.toBe(true)
+  await ui.unmount()
+})
+
+// ── 전체 걸린 시간: 진행률 옆에 ─────────────────────────
+
+test('the head shows how long the whole work has taken so far', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+
+  // 아직 아무것도 시작하지 않았으면 시간은 없다.
+  let ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /^0\/4 완료\s*$/ })).toBeDefined()
+  await ui.unmount()
+
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(72 * MIN)
+  ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /^0\/4 완료 · 1시간 12분째\s*$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('when all is finished the head keeps the whole time, start to last end', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(125 * MIN)
+  for (const id of ['a', 'b1', 'b2']) await $.tool.call(tool({ action: 'update', id, status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'c', status: 'skipped' }))
+
+  let ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /^4\/4 완료 · 2시간 5분\s*$/ })).toBeDefined()
+  await ui.unmount()
+
+  // 다 끝난 뒤에는 시간이 더 늘지 않는다.
+  await w.clock.advance(10 * MIN)
+  ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /^4\/4 완료 · 2시간 5분\s*$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+// ── 짧게 보기: 끝난 것은 최근 1개, 예정은 3개까지, 높이에 맞춰 줄이기 ──────
+
+const LONG = {
+  action: 'plan',
+  title: '안내서 만들기',
+  steps: [
+    { id: 's1', label: '자료 수집' },
+    { id: 's2', label: '목차 구성' },
+    { id: 's3', label: '초안 작성' },
+    { id: 's4', label: '그림 삽입' },
+    { id: 's5', label: '맞춤법 검사' },
+    { id: 's6', label: '검토 요청' },
+    { id: 's7', label: '수정 반영' },
+    { id: 's8', label: '게시' },
+  ],
+}
+
+type Kit = Parameters<Parameters<typeof test>[1]>[0]
+
+// s1 끝 → 1분 뒤 s2 끝 → s3 진행 중. 지금은 시작에서 2분 뒤.
+async function longUnderway($: Kit, w: ReturnType<typeof world>) {
+  await $.session.start(START)
+  await $.tool.call(tool(LONG))
+  await $.tool.call(tool({ action: 'update', id: 's1', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 's1', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 's2', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 's2', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 's3', status: 'doing' }))
+}
+
+// 각 글자 모양이 그려진 Text 가운데 하나라도 있는지.
+async function texts(ui: { findAll: (q: { type: 'Text' }) => Promise<{ text: string }[]> }, ...want: RegExp[]) {
+  const all = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  return want.map(re => all.some(t => re.test(t)))
+}
+
+test('a long list shows the last finished step, every step underway and the next three', async ($, on) => {
+  const w = world(on)
+  await longUnderway($, w)
+
+  // 머리 4 + 단계 7줄 + 빈 줄 5 + 실행 중 칸 2 = 18줄. 40줄에 들어간다.
+  const ui = await $.ui.mount(pane('terminal', 40, 40))
+  expect(
+    await texts(ui, /^✓ 완료 1개 더$/, /✓ 목차 구성/, /▶ 초안 작성/, /· 그림 삽입/, /· 맞춤법 검사/, /· 검토 요청/, /^· 예정 2개 더$/),
+  ).toEqual([true, true, true, true, true, true, true])
+  expect(await texts(ui, /자료 수집/, /수정 반영/, /게시/)).toEqual([false, false, false])
+  expect(await ui.find({ type: 'Text', text: /^2\/8 완료 · 2분째\s*$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^✓ 완료 1개 더$/ }))?.props.dimColor).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /^· 예정 2개 더$/ }))?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+test('the finished step kept is the one that ended last, not the last in order', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(LONG))
+  await $.tool.call(tool({ action: 'update', id: 's2', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 's2', status: 'done' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 's1', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 's3', status: 'doing' }))
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await texts(ui, /✓ 자료 수집/, /목차 구성/)).toEqual([true, false])
+  await ui.unmount()
+})
+
+test('a shorter pane shows fewer upcoming steps so nothing scrolls', async ($, on) => {
+  const w = world(on)
+  await longUnderway($, w)
+
+  // 예정 3개는 18줄, 2개는 16줄, 1개는 14줄. 15줄이면 1개.
+  const ui = await $.ui.mount(pane('terminal', 40, 15))
+  expect(await texts(ui, /^✓ 완료 1개 더$/, /✓ 목차 구성/, /▶ 초안 작성/, /· 그림 삽입/, /^· 예정 4개 더$/)).toEqual([
+    true,
+    true,
+    true,
+    true,
+    true,
+  ])
+  expect(await texts(ui, /맞춤법 검사/, /검토 요청/)).toEqual([false, false])
+  await ui.unmount()
+})
+
+test('a very short pane drops the finished step, then the blank rows, never a step underway', async ($, on) => {
+  const w = world(on)
+  await longUnderway($, w)
+  await $.tool.call(tool({ action: 'update', id: 's4', status: 'doing' }))
+
+  // 진행 중 둘. 예정 1개·완료 빼기 14줄, 예정 0개 12줄, 빈 줄까지 빼면 11줄.
+  let ui = await $.ui.mount(pane('terminal', 40, 11))
+  expect(await texts(ui, /^✓ 완료 2개 더$/, /▶ 초안 작성/, /▶ 그림 삽입/, /^· 예정 4개 더$/)).toEqual([true, true, true, true])
+  expect(await texts(ui, /목차 구성/, /맞춤법 검사/)).toEqual([false, false])
+  expect((await ui.find({ type: 'Box', key: 'step-s3' }))?.props.marginBottom).toBe(0)
+  // 마지막 묶음의 빈 줄은 실행 중 칸과의 간격이라 남긴다.
+  expect((await ui.find({ type: 'Box', key: 'step-s4' }))?.props.marginBottom).toBe(1)
+  await ui.unmount()
+
+  // 무엇으로도 모자라면 가장 짧은 모양으로 그리되 진행 중 단계는 남는다.
+  ui = await $.ui.mount(pane('terminal', 40, 5))
+  expect(await texts(ui, /▶ 초안 작성/, /▶ 그림 삽입/)).toEqual([true, true])
+  await ui.unmount()
+})
+
+test('a group with none of its steps shown is left out', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '발표 준비',
+      steps: [
+        { id: 'a', label: '준비' },
+        { id: 'b', label: '자료 조사' },
+        { id: 'c', label: '내용 정리' },
+        { id: 'd', label: '요약' },
+        {
+          id: 'g',
+          label: '발표',
+          children: [
+            { id: 'g1', label: '슬라이드' },
+            { id: 'g2', label: '리허설' },
+          ],
+        },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await texts(ui, /^· 예정 2개 더$/, /^발표$/, /슬라이드/)).toEqual([true, false, false])
+  expect(await ui.find({ type: 'Box', key: 'step-g' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a group shows only the steps of it that are shown', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'done' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'b2', status: 'done' }))
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await texts(ui, /^✓ 완료 2개 더$/, /✓ 화면/, /✓ 주문 화면/, /· 공개하기/)).toEqual([true, true, true, true])
+  expect(await texts(ui, /메뉴 화면/)).toEqual([false])
+  await ui.unmount()
+})
+
+// ── 멈춘 시간 빼기: Claude가 쉬는 동안(일이 끝나고 다음 입력까지, 질문·승인 창이 뜬 동안)은 세지 않는다 ──
+
+const turnStart = ($: Kit) => $.turn.start({ text: '', turnId: 'turn' })
+const turnEnd = ($: Kit) =>
+  $.turn.complete({ answer: '', durationMs: 0, isAborted: false, turnId: 'turn', reason: 'answer' })
+
+test('time while Claude rests between turns is not counted', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await turnStart($)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(5 * MIN)
+  await turnEnd($)
+  await w.clock.advance(30 * MIN)
+
+  // 쉬는 동안 시간은 그 자리에 멈춘다.
+  let ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /▶ 사진 모으기.*5분째$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^0\/4 완료 · 5분째\s*$/ })).toBeDefined()
+  await ui.unmount()
+
+  await turnStart($)
+  await w.clock.advance(5 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
+  ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /✓ 사진 모으기.*10분$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^1\/4 완료 · 10분째\s*$/ })).toBeDefined()
+  await ui.unmount()
+  const b = await $.ui.mount(band('terminal'))
+  expect(await b.find({ type: 'Text', text: /^✓ 사진 모으기 완료 \(10분 걸림\)$/ })).toBeDefined()
+  await b.unmount()
+})
+
+test('time waiting on a question or a plan approval is not counted', async ($, on) => {
+  const w = world(on)
+  on('tool.call', { tool: 'AskUserQuestion' } as Parameters<On>[1] & object, async () => {
+    await w.clock.sleep(1 * MIN)
+    return { result: {} }
+  })
+  on('tool.call', { tool: 'ExitPlanMode' } as Parameters<On>[1] & object, async () => {
+    await w.clock.sleep(1 * MIN)
+    return { result: {} }
+  })
+  await $.session.start(START)
+  await turnStart($)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(2 * MIN)
+
+  let call = $.tool.call({ tool: 'AskUserQuestion', questions: [] } as unknown as CallInput)
+  await w.clock.settle()
+  await w.clock.advance(1 * MIN)
+  await call
+  await w.clock.advance(3 * MIN)
+  call = $.tool.call({ tool: 'ExitPlanMode' } as unknown as CallInput)
+  await w.clock.settle()
+  await w.clock.advance(1 * MIN)
+  await call
+
+  // 일한 시간은 질문 전 2분과 질문·승인 사이 3분뿐이다.
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /▶ 사진 모으기.*5분째$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a list taken over from a closed window does not count the time it was closed', async ($, on) => {
+  // 꺼진 창은 5분 일하고 쉬다가(55분 전) 꺼졌다.
+  const old: Board = {
+    title: '지난 작업',
+    updatedAt: T0 - 55 * MIN,
+    pausedSince: T0 - 55 * MIN,
+    steps: [
+      { id: 'x', label: '첫 단계', status: 'doing', startedAt: T0 - 60 * MIN },
+      { id: 'y', label: '둘째 단계', status: 'todo' },
+    ],
+  }
+  const w = world(on, { sessionId: 'S2', store: { [`board:${ROOT_KEY}:OLD`]: entry('OLD', T0 - 55 * MIN, old) } })
+  await $.session.start(START)
+
+  let ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /▶ 첫 단계.*5분째$/ })).toBeDefined()
+  await ui.unmount()
+
+  await turnStart($)
+  await w.clock.advance(2 * MIN)
+  ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /▶ 첫 단계.*7분째$/ })).toBeDefined()
+  await ui.unmount()
 })

@@ -14,6 +14,8 @@ const BEAT_MS = 60_000
 const KEEP = 30
 // 1초보다 짧은 호출은 패널에 띄우지 않는다(깜빡임 방지).
 const SHOW_AFTER_MS = 1000
+// 실행 중 칸에 보이는 호출 줄 수.
+const MAX_CALLS = 5
 // 백그라운드 명령은 끝 알림을 놓쳐도 이 시간이 지나면 지운다.
 const BACKGROUND_TTL_MS = 12 * 60 * 60_000
 // 입력창 위 알림이 보이는 시간과 한 번에 쌓아 두는 줄 수.
@@ -35,6 +37,11 @@ let ticker: { timer: Timer; ms: number } | undefined
 let beat: Timer | undefined
 let pendingNotice: string | undefined
 let seq = 0
+// 턴과 턴 사이(Claude가 쉬는 중)인지. 질문 창이 닫혀도 턴 사이면 시간을 다시 세지 않는다.
+let between = false
+
+// 이 도구가 도는 동안은 사용자의 답을 기다리는 것이라 시간을 세지 않는다.
+const WAITING = new Set(['AskUserQuestion', 'ExitPlanMode'])
 
 const STATUSES: readonly StepStatus[] = ['todo', 'doing', 'done', 'blocked', 'skipped']
 const MARK: Record<StepStatus, string> = { todo: '·', doing: '▶', done: '✓', blocked: '⚠', skipped: '–' }
@@ -77,7 +84,7 @@ const RULES = {
     '- 사용자 메시지에 "[진행 상황 패널]" 안내가 붙어 있으면 이 창이 이어받은 목록이 있다는 뜻이다. 지금 하려는 일과 같은 일이면 그 목록을 이어서 update하고, 다른 일이면 plan으로 새로 적는다. action "show"로 지금 목록을 볼 수 있다.',
     '- 다른 할 일 기록 도구를 함께 쓰고 있으면 그 기록도 평소대로 같은 때에 함께 고친다.',
     '- 패널 아래 "실행 중" 칸에는 셸 명령(Bash·PowerShell)의 description이 그대로 보인다. description은 사용자가 쓰는 언어로, 무엇을 하는지 알 수 있게 짧게(15자 안팎) 적는다.',
-    '- label과 description은 그 언어의 문법에 맞는 자연스러운 말로 적는다. 한 목록 안에서는 끝맺는 꼴을 하나로 맞추고, 두 가지 일을 한 줄에 이어 붙이지 않는다.',
+    "- label과 description은 그 언어의 문법에 맞는 자연스러운 말로, 명사로 끝나는 짧은 개조식으로 적는다(예: '자료 수집', '초안 작성', '테스트 실행'. '~하기'·'~함'으로 끝내지 않는다). 두 가지 일을 한 줄에 이어 붙이지 않는다.",
     '- 메인 대화에서만 쓴다. 서브 에이전트는 쓰지 않는다.',
   ].join('\n'),
 } as const
@@ -183,9 +190,53 @@ function fmt(ms: number): string {
 
 function timeText(st: Shown, t: number): string {
   if (st.startedAt === undefined) return ''
-  if (st.status === 'doing') return `${fmt(t - st.startedAt)}째`
+  // 진행 중 시간은 30초마다만 다시 그려 1분 전까지는 숫자가 멈춰 보인다. 그동안은 "방금 시작"으로 적는다.
+  if (st.status === 'doing') return t - st.startedAt < 60_000 ? '방금 시작' : `${fmt(t - st.startedAt)}째`
   if (st.endedAt !== undefined) return fmt(st.endedAt - st.startedAt)
   return ''
+}
+
+// 일한 시각: 벽시계에서 Claude가 쉰 시간을 뺀 것. 쉬는 동안에는 쉬기 시작한 때에 멈춰 있다.
+// 단계 시각과 걸린 시간은 모두 이것으로 잰다(사용자 요청, 2026-11-19).
+function workTime(b: Board | null, t: number): number {
+  if (!b) return t
+  return (b.pausedSince ?? t) - (b.paused ?? 0)
+}
+
+// 전체 걸린 시간: 가장 먼저 시작한 단계부터 지금까지. 다 끝났으면 마지막으로 끝난 때까지.
+function totalTime(ls: Step[], t: number): string {
+  const starts = ls.flatMap(s => (s.startedAt === undefined ? [] : [s.startedAt]))
+  if (!starts.length) return ''
+  const from = Math.min(...starts)
+  if (!ls.every(s => isFinal(s.status))) return timeText({ status: 'doing', startedAt: from }, t)
+  const ends = ls.flatMap(s => (s.endedAt === undefined ? [] : [s.endedAt]))
+  return ends.length ? fmt(Math.max(...ends) - from) : ''
+}
+
+// 짧게 보기(사용자가 정함, 2026-11-19): 진행 중·막힘은 늘 모두, 끝난 것은 가장 최근에 끝난 1개,
+// 예정은 앞에서 3개까지. 패널 높이에 안 들어가면 FITS 의 다음 모양으로 줄여 스크롤이 생기지 않게 한다.
+type Fit = { todo: number; recent: boolean; gaps: boolean }
+const FITS: readonly Fit[] = [
+  { todo: 3, recent: true, gaps: true },
+  { todo: 2, recent: true, gaps: true },
+  { todo: 1, recent: true, gaps: true },
+  { todo: 1, recent: false, gaps: true },
+  { todo: 0, recent: false, gaps: true },
+  { todo: 0, recent: false, gaps: false },
+]
+// 패널 머리: 제목 1줄 + 진행률(글자 1줄, 막대 1줄) + 빈 줄 1줄.
+const HEAD_ROWS = 4
+
+function compact(ls: Step[], fit: Fit): { ids: Set<string>; moreDone: number; moreTodo: number } {
+  const ids = new Set(ls.filter(s => s.status === 'doing' || s.status === 'blocked').map(s => s.id))
+  const fin = ls.filter(s => isFinal(s.status))
+  const todo = ls.filter(s => s.status === 'todo')
+  // 가장 늦게 끝난 것. 끝난 시각이 같으면 순서상 뒤의 것.
+  const last = fin.reduce<Step | undefined>((a, s) => (a && (a.endedAt ?? -1) > (s.endedAt ?? -1) ? a : s), undefined)
+  const keep = fit.recent && last ? last : undefined
+  if (keep) ids.add(keep.id)
+  for (const s of todo.slice(0, fit.todo)) ids.add(s.id)
+  return { ids, moreDone: fin.length - (keep ? 1 : 0), moreTodo: Math.max(0, todo.length - fit.todo) }
 }
 
 // 화면 폭: 한글·전각은 2칸.
@@ -263,8 +314,12 @@ function labelOf(e: { tool: string }): string {
   }
   if (e.tool === 'Agent') return `에이전트: ${firstLine(str(args.description)) || '작업'}`
   if (e.tool === 'Monitor') return `모니터: ${firstLine(str(args.description)) || '감시'}`
+  if (e.tool === 'WebSearch') return '웹 검색'
+  if (e.tool === 'WebFetch') return '웹 페이지 읽기'
+  if (e.tool === 'Skill') return str(args.skill) ? `스킬: ${str(args.skill)}` : e.tool
+  // MCP 도구는 서버 이름이 길어 잘리므로 도구 이름만 보인다.
   const mcp = /^mcp__(.+?)__(.+)$/.exec(e.tool)
-  if (mcp) return `${mcp[2]} (${mcp[1]})`
+  if (mcp) return mcp[2] ?? e.tool
   return e.tool
 }
 
@@ -282,7 +337,7 @@ function summary(b: Board | null): string {
   const done = ls.filter(s => isFinal(s.status)).length
   const line = (s: Step, st: StepStatus, pad: string) =>
     `${pad}- [${st}] ${s.id}: ${s.label}${s.note ? ` (${s.note})` : ''}`
-  const lines = [`진행 상황: ${b.title} (${done}/${ls.length} 단계)`]
+  const lines = [`진행 상황: ${b.title} (${done}/${ls.length} 완료)`]
   for (const s of b.steps) {
     lines.push(line(s, shown(s).status, ''))
     for (const c of s.children ?? []) lines.push(line(c, c.status, '  '))
@@ -431,6 +486,21 @@ async function raise($: EngineInterface, fresh: { kind: AlertKind; text: string 
   await syncTicker($)
 }
 
+// Claude가 쉬기 시작함(일이 끝남, 질문·승인 창이 뜸). 이미 쉬는 중이면 그대로 둔다.
+async function rest($: EngineInterface, t: number): Promise<void> {
+  const b = await read($, board)
+  if (!b || b.pausedSince !== undefined) return
+  await save($, { ...b, pausedSince: t }, t)
+}
+
+// Claude가 다시 일함. 쉰 시간을 합에 더한다.
+async function wake($: EngineInterface, t: number): Promise<void> {
+  const b = await read($, board)
+  if (!b || b.pausedSince === undefined) return
+  const { pausedSince, ...others } = b
+  await save($, { ...others, paused: (b.paused ?? 0) + (t - pausedSince) }, t)
+}
+
 async function heartbeat($: EngineInterface): Promise<void> {
   if (!me) return
   const who = await whoAmI($)
@@ -571,7 +641,9 @@ export const register: Register = on => {
       const title = typeof a.title === 'string' && a.title.trim() ? a.title.trim() : '진행 상황'
       // 같은 제목이면 같은 일을 다시 적는 것이라 같은 id 단계의 상태·시간을 이어받는다. 제목이 다르면 새 일이다.
       const same = current && current.title === title ? current : null
-      const next: Board = { title, steps: buildSteps(input, same, t), updatedAt: t }
+      const next: Board = { title, steps: buildSteps(input, same, workTime(same, t)), updatedAt: t }
+      if (same?.paused !== undefined) next.paused = same.paused
+      if (same?.pausedSince !== undefined) next.pausedSince = same.pausedSince
       await save($, next, t)
       await $.ui.open(OPEN)
       return { result: summary(next) }
@@ -589,15 +661,16 @@ export const register: Register = on => {
         return { deny: `"${id}"는 묶음이라 아래 단계의 상태로 정해집니다. 아래 단계를 update해 주세요.` }
       }
       const wasAllFinal = allFinal(copy)
+      const w = workTime(copy, t)
 
       if (status === 'doing') {
-        step.startedAt ??= t
+        step.startedAt ??= w
         delete step.endedAt
       } else if (status === 'todo') {
         delete step.startedAt
         delete step.endedAt
       } else {
-        step.endedAt = t
+        step.endedAt = w
       }
       step.status = status
       const note = typeof a.note === 'string' ? a.note.trim() : ''
@@ -609,7 +682,7 @@ export const register: Register = on => {
       // 기본 알림창 대신 입력창 바로 위에 색 테두리 상자로 5초 동안 띄운다.
       const fresh: { kind: AlertKind; text: string }[] = []
       if (status === 'done') {
-        const took = step.startedAt !== undefined ? fmt(t - step.startedAt) : ''
+        const took = step.startedAt !== undefined ? fmt(w - step.startedAt) : ''
         fresh.push({ kind: 'done', text: `✓ ${step.label} 완료${took ? ` (${took} 걸림)` : ''}` })
       } else if (status === 'blocked') {
         fresh.push({ kind: 'blocked', text: `⚠ ${step.label}에서 막힘${note ? `: ${note}` : ''}` })
@@ -632,6 +705,8 @@ export const register: Register = on => {
     await update($, running, list => [...list, { id, label, startedAt: t, isBackground: false }])
     await update($, now, () => t)
     await syncTicker($)
+    const waits = WAITING.has(e.tool)
+    if (waits) await rest($, t)
     let taskId: string | undefined
     try {
       const r = await next(e)
@@ -641,8 +716,25 @@ export const register: Register = on => {
       const keep: Running[] = taskId ? [{ id, label, startedAt: t, isBackground: true, taskId }] : []
       await update($, running, list => [...list.filter(x => x.id !== id), ...keep])
       await syncTicker($)
+      if (waits && !between) await wake($, await $.clock.now())
     }
   }).catch(($, e, next) => next(e)) // 기록이 실패해도 도구는 그대로 돈다(이미 돌았으면 그 결과를 그대로).
+
+  // Claude가 일하는 동안만 시간을 센다: 턴이 끝나면 멈추고, 다음 턴이 시작하면 다시 센다.
+  // 창이 꺼져 있던 시간도 마지막 턴 끝에서 멈춘 채로 저장되어 빠진다.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+    between = false
+    await wake($, await $.clock.now())
+    return next(e)
+  }).catch(($, e, next) => next(e)) // 실패해도 턴은 그대로 돈다.
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+    between = true
+    await rest($, await $.clock.now())
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('prompt.submit', async ($, e, next) => {
     if (e.origin?.kind === 'task-notification') {
@@ -684,12 +776,14 @@ export const register: Register = on => {
     const b = await read($, board)
     const calls = await read($, running)
     const t = await read($, now)
+    // 단계 시간은 일한 시각으로, 실행 중 칸은 벽시계로.
+    const w = workTime(b, t)
     const cols = Math.max(16, e.props.bodyColumns)
 
     // 한 줄: 표시(상태 색) + 이름(상태별 강조) + 오른쪽 끝 시간.
     const row = (depth: number, st: Shown, label: string, isGroup: boolean) => {
       const head = `${'  '.repeat(depth)}${MARK[st.status]} `
-      const right = timeText(st, t)
+      const right = timeText(st, w)
       const room = cols - cells(head) - (right ? cells(right) + 1 : 0)
       const name = cut(label, room)
       const gap = right ? ' '.repeat(Math.max(1, cols - cells(head) - cells(name) - cells(right))) : ''
@@ -702,7 +796,8 @@ export const register: Register = on => {
           {' '}
           <Text
             color={ls.color}
-            bold={isGroup || ls.bold}
+            // 묶음 이름은 굵게. 다만 끝났거나 건너뛴 묶음은 끝난 단계처럼 물러나게 둔다.
+            bold={ls.bold || (isGroup && !isFinal(st.status))}
             dimColor={ls.dimColor}
             strikethrough={ls.strikethrough}
           >
@@ -725,6 +820,22 @@ export const register: Register = on => {
       return status === 'blocked' ? <Text color="warning">{text}</Text> : <Text dimColor>{text}</Text>
     }
 
+    const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
+    const callLines: RenderChildren[] = [<Text color="subtle">{'─'.repeat(Math.min(cols, 40))}</Text>]
+    if (visible.length === 0) callLines.push(<Text dimColor>실행 중인 작업 없음</Text>)
+    // "- 하는 일" 목록만. 머리말과 걸린 시간은 사용자 요청으로 뺐다(2026-11-18). 백그라운드도 같은 모양.
+    // 패널이 길어지지 않게 다섯 줄까지만 보이고 나머지는 개수로 적는다.
+    for (const c of visible.slice(0, MAX_CALLS)) {
+      const name = cut(c.label, cols - 2)
+      callLines.push(
+        <Text>
+          <Text color="suggestion">-</Text>
+          {` ${name}`}
+        </Text>,
+      )
+    }
+    if (visible.length > MAX_CALLS) callLines.push(<Text dimColor>{`외 ${visible.length - MAX_CALLS}개`}</Text>)
+
     // 머리, 단계 묶음마다 아래에 빈 줄 하나. 묶음 안의 아래 단계는 붙여 둔다.
     const body: RenderChildren[] = []
     if (!b) {
@@ -736,11 +847,12 @@ export const register: Register = on => {
     } else {
       const ls = leaves(b.steps)
       const done = ls.filter(s => isFinal(s.status)).length
+      const took = totalTime(ls, w)
       body.push(
         <Box key="head" flexDirection="column" marginBottom={1}>
           <Text bold>{cut(b.title, cols)}</Text>
           <Progress
-            label={`${done}/${ls.length} 완료`}
+            label={`${done}/${ls.length} 완료${took ? ` · ${took}` : ''}`}
             value={done}
             max={ls.length}
             // 숫자는 label에 이미 있다. 비워 두면 막대 옆에 같은 숫자를 또 그리지 않는다(빼면 퍼센트가 그려진다).
@@ -749,35 +861,62 @@ export const register: Register = on => {
           />
         </Box>,
       )
-      for (const s of b.steps) {
-        const kids = s.children ?? []
-        const lines: RenderChildren[] = [row(0, shown(s), s.label, kids.length > 0)]
-        if (s.note && kids.length === 0) lines.push(noteRow(0, s.note, s.status))
-        for (const c of kids) {
-          lines.push(row(1, c, c.label, false))
-          if (c.note) lines.push(noteRow(1, c.note, c.status))
+
+      // 한 모양(fit)으로 보일 단계 묶음과 그 줄 수. 그릴 줄로 세므로 셈과 그림이 어긋나지 않는다.
+      const layout = (fit: Fit) => {
+        const { ids, moreDone, moreTodo } = compact(ls, fit)
+        const blocks: { id: string; lines: RenderChildren[] }[] = []
+        for (const s of b.steps) {
+          const kids = s.children ?? []
+          const seen = kids.filter(c => ids.has(c.id))
+          // 묶음은 보이는 아래 단계가 있을 때만, 그 단계들만 그린다.
+          if (kids.length ? seen.length === 0 : !ids.has(s.id)) continue
+          const lines: RenderChildren[] = [row(0, shown(s), s.label, kids.length > 0)]
+          if (s.note && kids.length === 0) lines.push(noteRow(0, s.note, s.status))
+          for (const c of seen) {
+            lines.push(row(1, c, c.label, false))
+            if (c.note) lines.push(noteRow(1, c.note, c.status))
+          }
+          blocks.push({ id: s.id, lines })
         }
+        // 숨긴 것은 개수만: 끝난 것은 맨 위 묶음에, 예정은 맨 아래 묶음에 붙인다.
+        if (moreDone) {
+          const line = (
+            <Text dimColor>
+              {`✓ 완료 ${moreDone}개 더`}
+            </Text>
+          )
+          if (blocks[0]) blocks[0].lines.unshift(line)
+          else blocks.push({ id: 'more', lines: [line] })
+        }
+        if (moreTodo) {
+          const line = (
+            <Text dimColor>
+              {`· 예정 ${moreTodo}개 더`}
+            </Text>
+          )
+          const end = blocks[blocks.length - 1]
+          if (end) end.lines.push(line)
+          else blocks.push({ id: 'more', lines: [line] })
+        }
+        const lineCount = blocks.reduce((n, bl) => n + bl.lines.length, 0)
+        const rows = HEAD_ROWS + lineCount + (fit.gaps ? blocks.length : 1) + callLines.length
+        return { fit, blocks, rows }
+      }
+      // 패널에 다 들어가는 첫 모양. 무엇으로도 모자라면 가장 짧은 모양.
+      const tries = FITS.map(layout)
+      const chosen = tries.find(l => l.rows <= e.props.scroll.bodyRows) ?? tries.at(-1)!
+      chosen.blocks.forEach((bl, i) => {
+        // 마지막 묶음의 빈 줄은 실행 중 칸과의 간격이라 늘 남긴다.
+        const gap = chosen.fit.gaps || i === chosen.blocks.length - 1 ? 1 : 0
         body.push(
-          <Box key={`step-${s.id}`} flexDirection="column" marginBottom={1}>
-            {lines}
+          <Box key={`step-${bl.id}`} flexDirection="column" marginBottom={gap}>
+            {bl.lines}
           </Box>,
         )
-      }
+      })
     }
 
-    const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
-    const callLines: RenderChildren[] = [<Text color="subtle">{'─'.repeat(Math.min(cols, 40))}</Text>]
-    if (visible.length === 0) callLines.push(<Text dimColor>실행 중인 작업 없음</Text>)
-    // "- 하는 일" 목록만. 머리말과 걸린 시간은 사용자 요청으로 뺐다(2026-11-18). 백그라운드도 같은 모양.
-    for (const c of visible) {
-      const name = cut(c.label, cols - 2)
-      callLines.push(
-        <Text>
-          <Text color="suggestion">-</Text>
-          {` ${name}`}
-        </Text>,
-      )
-    }
     body.push(
       <Box key="calls" flexDirection="column">
         {callLines}

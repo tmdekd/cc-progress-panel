@@ -17,6 +17,11 @@ export type Board = {
   title: string
   steps: Step[]
   updatedAt: number
+  // Claude가 쉰 시간(ms)의 합과, 지금 쉬고 있으면 쉬기 시작한 시각. 단계의 startedAt·endedAt 은
+  // 벽시계에서 쉰 시간을 뺀 '일한 시각'이라, 둘의 차가 곧 일한 시간이다.
+  // 둘 다 없어도 되는 칸이라 옛 값도 그대로 읽힌다(모양 태그를 올리지 않는다).
+  paused?: number
+  pausedSince?: number
 }
 
 export type BoardEntry = {
