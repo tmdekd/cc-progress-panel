@@ -1904,3 +1904,117 @@ test('the arrow of a command under a step takes the step color', async ($, on) =
   await w.clock.advance(5 * SEC)
   await Promise.all(calls)
 })
+
+// ── 2026-11-24 손질: 명령이 붙는 자리 ────────────────────────────────────
+// 막혔다가 다시 진행 중이 된 단계는 그때 시작한 것으로 본다(사용자가 정함).
+
+test('a step started again after being blocked takes the commands', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'blocked' }))
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  const calls = await runBash($, w, '사진 압축')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const rows = await railRows(ui)
+  expect(rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1]).toBe('┆ ▶ 사진 압축')
+  expect(await ui.find({ type: 'Text', text: /^│ ┆ ▶/ })).toBeUndefined()
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('a step underway again in a new plan keeps the time it started again', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  // 공개하기가 먼저 시작했다가 막히고, 메뉴 화면이 시작한 뒤, 같은 제목으로 다시 적으며 공개하기를 진행 중으로.
+  await $.tool.call(tool({ action: 'update', id: 'c', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked' }))
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ ...PLAN, steps: PLAN.steps.map(s => (s.id === 'c' ? { ...s, status: 'doing' } : s)) }))
+  const calls = await runBash($, w, '배포 준비')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const rows = await railRows(ui)
+  expect(rows[rows.findIndex(r => /^◉ 공개하기/.test(r)) + 1]).toBe('┆ ▶ 배포 준비')
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('the step started last takes the commands even when it comes first in the list', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  const calls = await runBash($, w, '테스트 실행')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const rows = await railRows(ui)
+  expect(rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1]).toBe('┆ ▶ 테스트 실행')
+  expect(await ui.find({ type: 'Text', text: /^│ ┆ ▶/ })).toBeUndefined()
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('a background command stays at the bottom while others hang under the step', async ($, on) => {
+  const w = world(on)
+  on('tool.call', { tool: 'Bash' }, async ($$, e) => {
+    if ((e as unknown as { run_in_background?: boolean }).run_in_background) return { result: { backgroundTaskId: 't1' } }
+    await w.clock.sleep(5 * SEC)
+    return { result: {} }
+  })
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', description: '서버 실행', run_in_background: true })
+  const call = $.tool.call({ tool: 'Bash', command: 'npm test', description: '테스트 실행' })
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    const box = await ui.find({ type: 'Box', key: 'calls' })
+    expect(box).toBeDefined()
+    expect(box?.props.marginTop).toBe(1)
+    const rows = await railRows(ui)
+    const under = rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1]
+    expect(under).toBe('┆ ▶ 테스트 실행')
+    expect(rows.filter(r => r === '┆ ▶ 서버 실행')).toHaveLength(1)
+    expect(rows.at(-1)).toBe('┆ ▶ 서버 실행')
+    await ui.unmount()
+  }
+  await w.clock.advance(5 * SEC)
+  await call
+})
+
+test('rail, branch and dot colors are the same on terminal and desktop', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing', note: '시안 둘' }))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    // 사진 모으기→화면(지나옴), 메뉴 화면 가지·그 메모의 세로선·주문 화면 가지(지금 묶음), 화면→공개하기(앞으로)
+    const got = (await ui.findAll({ type: 'Text', text: /^(│|├─|└─)$/ })).map(r => r.props.color)
+    expect(got).toEqual(['success', 'claude', 'claude', 'claude', 'subtle'])
+    expect((await ui.find({ type: 'Text', text: /^┆$/ }))?.props.color).toBe('claude')
+    await ui.unmount()
+  }
+})

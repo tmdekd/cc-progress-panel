@@ -962,10 +962,10 @@ export const register: Register = on => {
     // 같은 글(같은 파일을 두 번 읽는 등)은 한 줄로.
     const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
     const shownCalls = visible.filter((c, i) => visible.findIndex(d => d.label === c.label) === i)
-    // 백그라운드 명령은 늘 목록 맨 아래에(사용자가 정함, 2026-11-24). 진행 중 단계 아래에는 그 밖의 명령만.
-    const hung = shownCalls.filter(c => !c.isBackground)
-    const below = shownCalls.filter(c => c.isBackground)
     const at = b ? callsAt(leaves(b.steps)) : undefined
+    // 백그라운드 명령은 늘 목록 맨 아래에(사용자가 정함, 2026-11-24). 진행 중 단계 아래에는 그 밖의 명령만.
+    const hung = at ? shownCalls.filter(c => !c.isBackground) : []
+    const below = at ? shownCalls.filter(c => c.isBackground) : shownCalls
 
     // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게), 이어서 그 단계에서 돌고 있는 명령.
     const hang = (l: Lead, step: Step): RenderChildren[] => {
@@ -979,7 +979,7 @@ export const register: Register = on => {
           </Text>,
         )
       }
-      if (step.id === at) out.push(...callLines(l, shownCalls))
+      if (step.id === at) out.push(...callLines(l, hung))
       return out
     }
 
@@ -992,7 +992,7 @@ export const register: Register = on => {
       </Text>
     )
 
-    const bottom = shownCalls.length && !at ? callLines({ dot: 'subtle' }, shownCalls) : []
+    const bottom = callLines({ dot: 'subtle' }, below)
 
     const body: RenderChildren[] = []
     if (!b) {
