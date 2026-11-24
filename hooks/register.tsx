@@ -361,61 +361,63 @@ function shortCommand(command: string): string {
   return s.trim()
 }
 
-// 실행 중 칸 한 줄의 글. 파일·검색 도구는 종류와 대상을 따로 두어 같은 종류를 한 줄로 묶는다.
+// 돌고 있는 명령 한 줄의 글. 종류(흐리게)와 대상을 따로 두어 좁으면 대상만 줄인다.
 type Label = { label: string; kind?: string; target?: string }
+
+// 파일 종류: 좁으면 폴더부터 뺀다.
+const FILE_KINDS = new Set(['읽기', '수정', '작성'])
 
 function labelOf(e: { tool: string }): Label {
   const args = e as unknown as Record<string, unknown>
   const str = (v: unknown) => (typeof v === 'string' ? v : '')
-  // "- Read"만으로는 무엇을 보는지 모른다. 종류와 대상(파일 이름, 찾는 말, 주소)을 함께 보인다.
-  const of = (kind: string, target: string): Label => (target ? { label: `${kind}: ${target}`, kind, target } : { label: kind })
-  const file = (key: string) => str(args[key]).split(/[\\/]+/).filter(Boolean).pop() ?? ''
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+  // "- Read"만으로는 무엇을 보는지 모른다. 종류와 대상(폴더/파일, 찾는 말과 범위, 주소)을 함께 보인다.
+  const of = (kind: string, target: string): Label => (target ? { label: `${kind} ${target}`, kind, target } : { label: kind })
+  const parts = (key: string) => str(args[key]).split(/[\\/]+/).filter(Boolean)
+  // 경로는 마지막 두 마디(폴더/파일)만. 같은 이름의 파일이 여러 폴더에 있어도 구분된다.
+  const file = (key: string) => parts(key).slice(-2).join('/')
+  const where = (s: string) => (s ? ` · ${s}` : '')
   // 명령은 Claude가 붙인 짧은 설명을 쓴다. 명령 첫 줄은 경로 때문에 잘려 무엇을 하는지 안 보인다.
   if (e.tool === 'Bash' || e.tool === 'PowerShell') {
     return { label: firstLine(str(args.description)) || shortCommand(str(args.command)) || e.tool }
   }
-  if (e.tool === 'Agent') return { label: `에이전트: ${firstLine(str(args.description)) || '작업'}` }
-  if (e.tool === 'Monitor') return { label: `모니터: ${firstLine(str(args.description)) || '감시'}` }
-  if (e.tool === 'Read') return of('파일 읽기', file('file_path'))
-  if (e.tool === 'Edit') return of('파일 수정', file('file_path'))
-  if (e.tool === 'Write') return of('파일 작성', file('file_path'))
-  if (e.tool === 'NotebookEdit') return of('파일 수정', file('notebook_path'))
-  if (e.tool === 'Grep') return of('코드 검색', str(args.pattern) && `"${firstLine(str(args.pattern))}"`)
-  if (e.tool === 'Glob') return of('파일 찾기', firstLine(str(args.pattern)))
-  if (e.tool === 'WebSearch') return of('웹 검색', firstLine(str(args.query)))
+  if (e.tool === 'Agent') return of('에이전트', firstLine(str(args.description)) || '작업')
+  if (e.tool === 'Monitor') return of('모니터', firstLine(str(args.description)) || '감시')
+  if (e.tool === 'Read') {
+    // 줄 범위: offset이 있으면 ":시작", limit도 있으면 ":시작-끝".
+    const from = num(args.offset)
+    const n = num(args.limit)
+    const lines = from === undefined ? '' : n ? `:${from}-${from + n - 1}` : `:${from}`
+    return of('읽기', file('file_path') && file('file_path') + lines)
+  }
+  if (e.tool === 'Edit') return of('수정', file('file_path'))
+  if (e.tool === 'Write') return of('작성', file('file_path'))
+  if (e.tool === 'NotebookEdit') return of('수정', file('notebook_path'))
+  if (e.tool === 'Grep') {
+    // 범위: 경로가 있으면 그 끝 이름, 없으면 glob, 그것도 없으면 type.
+    const pattern = firstLine(str(args.pattern))
+    const scope = parts('path').at(-1) ?? (firstLine(str(args.glob)) || firstLine(str(args.type)))
+    return of('검색', pattern && `"${pattern}"${where(scope)}`)
+  }
+  if (e.tool === 'Glob') {
+    const pattern = firstLine(str(args.pattern))
+    return of('찾기', pattern && `${pattern}${where(parts('path').at(-1) ?? '')}`)
+  }
+  if (e.tool === 'WebSearch') return of('웹 검색', str(args.query) && `"${firstLine(str(args.query))}"`)
   if (e.tool === 'WebFetch') return of('웹 페이지', /^[a-z]+:\/\/([^/?#]+)/i.exec(str(args.url))?.[1] ?? '')
-  if (e.tool === 'Skill') return { label: str(args.skill) ? `스킬: ${str(args.skill)}` : e.tool }
+  if (e.tool === 'Skill') return str(args.skill) ? of('스킬', str(args.skill)) : { label: e.tool }
   // MCP 도구는 서버 이름이 길어 잘리므로 도구 이름만 보인다.
   const mcp = /^mcp__(.+?)__(.+)$/.exec(e.tool)
   if (mcp) return { label: mcp[2] ?? e.tool }
   return { label: e.tool }
 }
 
-// 같은 종류의 대상들: 폭에 들어가는 만큼 이름을 적고 나머지는 "외 N개".
-function fitNames(targets: string[], room: number): string {
-  for (let k = targets.length; k >= 1; k--) {
-    const more = targets.length - k
-    const tail = more ? ` 외 ${more}개` : ''
-    const names = targets.slice(0, k).join(', ')
-    // 하나도 들어가지 않으면 첫 이름을 잘라서라도 남긴다.
-    if (k === 1 || cells(names + tail) <= room) return cut(cut(names, Math.max(1, room - cells(tail))) + tail, room)
-  }
-  return ''
-}
-
-type CallGroup = { label: string; kind?: string; targets: string[]; count: number }
-
-// 같은 종류(파일 읽기 등)는 한 묶음으로. 순서는 그 종류가 처음 시작한 차례.
-function groupCalls(visible: Running[]): CallGroup[] {
-  const groups: CallGroup[] = []
-  for (const c of visible) {
-    const same = c.kind && c.target ? groups.find(g => g.kind === c.kind) : undefined
-    if (same && c.target) {
-      if (!same.targets.includes(c.target)) same.targets.push(c.target)
-      same.count += 1
-    } else groups.push({ label: c.label, kind: c.kind, targets: c.target ? [c.target] : [], count: 1 })
-  }
-  return groups
+// 좁을 때 대상 줄이기: 파일은 폴더, 줄 범위 차례로 빼고, 그래도 넘치면 끝을 자른다.
+function fitTarget(kind: string, target: string, room: number): string {
+  if (!FILE_KINDS.has(kind)) return cut(target, room)
+  const name = target.replace(/^.*\//, '')
+  const bare = name.replace(/:\d+(?:-\d+)?$/, '')
+  return cut([target, name].find(t => cells(plain(t)) <= room) ?? bare, room)
 }
 
 // 돌고 있는 명령을 붙일 단계: 진행 중인 아래 단계 가운데 가장 나중에 시작한 것. 없으면 맨 아래에 둔다.
@@ -884,18 +886,21 @@ export const register: Register = on => {
     const w = workTime(b, t)
     const cols = Math.max(16, e.props.bodyColumns)
 
-    // 단계 아래에 붙는 줄의 앞부분: 묶음 안이면 세로선, 그리고 점선. 글자는 단계 이름과 같은 칸에서 시작한다.
-    type Lead = { rail?: Color; dot: Color }
+    // 단계 아래에 붙는 줄의 앞부분: 묶음 안이면 세로선(마지막 가지 └─ 아래는 빈칸, rail: null), 그리고 점선.
+    // 글자는 단계 이름과 같은 칸에서 시작한다.
+    type Lead = { rail?: Color | null; dot: Color }
     const leadOf = (l: Lead): RenderChildren[] => [
-      ...(l.rail ? [<Text color={l.rail}>│</Text>, ' '] : []),
+      ...(l.rail ? [<Text color={l.rail}>│</Text>, ' '] : l.rail === null ? ['  '] : []),
       <Text color={l.dot}>┆</Text>,
       ' ',
     ]
-    const leadCells = (l: Lead) => (l.rail ? 4 : 2)
+    const leadCells = (l: Lead) => (l.rail === undefined ? 2 : 4)
 
-    // 한 줄: [세로선] 표시(상태 색) + 이름(상태별 강조) + 오른쪽 끝 시간.
-    const row = (st: Shown, label: string, isGroup: boolean, rail?: Color) => {
-      const head = rail ? 4 : 2
+    // 한 줄: [가지] 표시(상태 색) + 이름(상태별 강조) + 오른쪽 끝 시간.
+    // 묶음 안 단계는 진행선에서 가지를 친다(├─, 목록 맨 끝 묶음의 마지막 단계는 └─).
+    type Branch = { color: Color; last: boolean }
+    const row = (st: Shown, label: string, isGroup: boolean, branch?: Branch) => {
+      const head = branch ? 4 : 2
       const right = timeText(st, w)
       const room = cols - head - (right ? cells(right) + 1 : 0)
       const name = cut(label, room)
@@ -905,8 +910,7 @@ export const register: Register = on => {
       const ts = TIME[st.status]
       return (
         <Text>
-          {rail ? <Text color={rail}>│</Text> : ''}
-          {rail ? ' ' : ''}
+          {branch ? <Text color={branch.color}>{branch.last ? '└─' : '├─'}</Text> : ''}
           <Text color={COLOR[st.status]}>{MARK[st.status]}</Text>
           {' '}
           <Text color={ls.color} bold={ls.bold} dimColor={ls.dimColor} strikethrough={ls.strikethrough}>
@@ -924,21 +928,20 @@ export const register: Register = on => {
       )
     }
 
-    // 명령 줄들: 다섯 줄까지, 넘으면 "외 n개". 종류("파일 읽기:")는 흐리게, 대상은 보통.
-    const callLines = (l: Lead, groups: CallGroup[]): RenderChildren[] => {
-      const room = cols - leadCells(l)
-      const out: RenderChildren[] = groups.slice(0, MAX_CALLS).map(g => {
-        if (!g.kind) return <Text>{leadOf(l)}{cut(g.label, room)}</Text>
-        const kind = `${g.kind}:`
-        return (
-          <Text>
-            {leadOf(l)}
-            <Text dimColor>{kind}</Text>
-            {` ${fitNames(g.targets, room - cells(kind) - 1)}`}
-          </Text>
-        )
-      })
-      const hidden = groups.slice(MAX_CALLS).reduce((n, g) => n + g.count, 0)
+    // 명령 줄(사용자가 고름, 2026-11-24): 한 호출에 한 줄 "▶ 종류 대상". ▶는 앞 점선과 같은 색, 종류는 흐리게.
+    // 다섯 줄까지, 넘으면 "외 n개".
+    const callLines = (l: Lead, list: Running[]): RenderChildren[] => {
+      const room = cols - leadCells(l) - 2
+      const out: RenderChildren[] = list.slice(0, MAX_CALLS).map(c => (
+        <Text>
+          {leadOf(l)}
+          <Text color={l.dot}>▶</Text>
+          {' '}
+          {c.kind && c.target ? <Text dimColor>{c.kind}</Text> : ''}
+          {c.kind && c.target ? ` ${fitTarget(c.kind, c.target, room - cells(c.kind) - 1)}` : cut(c.label, room)}
+        </Text>
+      ))
+      const hidden = list.length - MAX_CALLS
       if (hidden > 0) {
         out.push(
           <Text>
@@ -951,7 +954,9 @@ export const register: Register = on => {
     }
 
     // 돌고 있는 명령: 진행 중 단계 아래에. 그런 단계가 없으면 맨 아래에.
-    const groups = groupCalls(calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS))
+    // 같은 글(같은 파일을 두 번 읽는 등)은 한 줄로.
+    const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
+    const shownCalls = visible.filter((c, i) => visible.findIndex(d => d.label === c.label) === i)
     const at = b ? callsAt(leaves(b.steps)) : undefined
 
     // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게), 이어서 그 단계에서 돌고 있는 명령.
@@ -966,7 +971,7 @@ export const register: Register = on => {
           </Text>,
         )
       }
-      if (step.id === at) out.push(...callLines(l, groups))
+      if (step.id === at) out.push(...callLines(l, shownCalls))
       return out
     }
 
@@ -979,7 +984,7 @@ export const register: Register = on => {
       </Text>
     )
 
-    const bottom = groups.length && !at ? callLines({ dot: 'subtle' }, groups) : []
+    const bottom = shownCalls.length && !at ? callLines({ dot: 'subtle' }, shownCalls) : []
 
     const body: RenderChildren[] = []
     if (!b) {
@@ -1046,10 +1051,11 @@ export const register: Register = on => {
             const s = o.step
             lines.push(row(shown(s), s.label, o.kids.length > 0))
             if (!o.kids.length) lines.push(...hang({ dot: COLOR[s.status] }, s))
-            for (const c of o.kids) {
-              lines.push(row(c, c.label, false, railIn(i)))
-              lines.push(...hang({ rail: railIn(i), dot: COLOR[c.status] }, c))
-            }
+            o.kids.forEach((c, k) => {
+              const last = i === order.length - 1 && k === o.kids.length - 1
+              lines.push(row(c, c.label, false, { color: railIn(i), last }))
+              lines.push(...hang({ rail: last ? null : railIn(i), dot: COLOR[c.status] }, c))
+            })
           }
           // 맨 위 묶음 사이의 빈 줄 대신 세로선 한 줄.
           if (fit.gaps && i < order.length - 1) lines.push(<Text color={railAfter(i)}>│</Text>)
