@@ -14,7 +14,7 @@ const BEAT_MS = 60_000
 const KEEP = 30
 // 1초보다 짧은 호출은 패널에 띄우지 않는다(깜빡임 방지).
 const SHOW_AFTER_MS = 1000
-// 실행 중 칸에 보이는 호출 줄 수.
+// 돌고 있는 명령을 한 자리(진행 중 단계 아래, 목록 맨 아래)에 보이는 줄 수.
 const MAX_CALLS = 5
 // 머리 막대가 이보다 짧아지면 걸린 시간을 뺀다.
 const MIN_BAR = 4
@@ -421,10 +421,12 @@ function fitTarget(kind: string, target: string, room: number): string {
 }
 
 // 돌고 있는 명령을 붙일 단계: 진행 중인 아래 단계 가운데 가장 나중에 시작한 것. 없으면 맨 아래에 둔다.
+// 막혔다가 다시 진행 중이 된 단계는 그때 시작한 것으로 본다(사용자가 정함, 2026-11-24).
 function callsAt(ls: Step[]): string | undefined {
+  const since = (s: Step) => s.doingSince ?? s.startedAt ?? 0
   let at: Step | undefined
   for (const s of ls) {
-    if (s.status === 'doing' && (!at || (s.startedAt ?? 0) > (at.startedAt ?? 0))) at = s
+    if (s.status === 'doing' && (!at || since(s) > since(at))) at = s
   }
   return at?.id
 }
@@ -498,8 +500,10 @@ function buildSteps(input: StepInput[], old: Board | null, t: number): Step[] {
       if (prev.startedAt !== undefined) step.startedAt = prev.startedAt
       if (prev.endedAt !== undefined && status !== 'doing') step.endedAt = prev.endedAt
       if (prev.note) step.note = prev.note
+      if (prev.doingSince !== undefined && status === 'doing') step.doingSince = prev.doingSince
     }
     if (status === 'doing' && step.startedAt === undefined) step.startedAt = t
+    if (status === 'doing' && prev?.status !== 'doing') step.doingSince = t
     if (s.children) step.children = buildSteps(s.children, old, t)
     return step
   })
@@ -771,6 +775,7 @@ export const register: Register = on => {
 
       if (status === 'doing') {
         step.startedAt ??= w
+        if (step.status !== 'doing') step.doingSince = w
         delete step.endedAt
       } else if (status === 'todo') {
         delete step.startedAt
@@ -957,6 +962,9 @@ export const register: Register = on => {
     // 같은 글(같은 파일을 두 번 읽는 등)은 한 줄로.
     const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
     const shownCalls = visible.filter((c, i) => visible.findIndex(d => d.label === c.label) === i)
+    // 백그라운드 명령은 늘 목록 맨 아래에(사용자가 정함, 2026-11-24). 진행 중 단계 아래에는 그 밖의 명령만.
+    const hung = shownCalls.filter(c => !c.isBackground)
+    const below = shownCalls.filter(c => c.isBackground)
     const at = b ? callsAt(leaves(b.steps)) : undefined
 
     // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게), 이어서 그 단계에서 돌고 있는 명령.

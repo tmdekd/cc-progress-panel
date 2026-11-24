@@ -10,6 +10,9 @@ export type Step = {
   note?: string
   startedAt?: number
   endedAt?: number
+  // 마지막으로 진행 중이 된 시각(일한 시각). 막혔다가 다시 진행 중이 되면 새로 적는다. startedAt 은 처음 시작한 때 그대로다.
+  // 돌고 있는 명령은 이 값이 가장 큰 진행 중 단계 아래에 붙는다. 없어도 되는 칸이라 모양 태그를 올리지 않는다.
+  doingSince?: number
   children?: Step[]
 }
 
