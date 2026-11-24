@@ -797,6 +797,8 @@ test('the rules are added to the system prompt, last', async ($, on) => {
   expect(last?.text).toMatch(/같은 title로 다시 "plan"/)
   // 패널의 실행 중 줄이 읽히도록 명령 설명을 사용자가 쓰는 언어로 짧게 적게 한다(특정 언어로 못 박지 않는다).
   expect(last?.text).toMatch(/description.*사용자가 쓰는 언어/)
+  // 명령은 진행 중 단계 아래에 보인다(2026-11-24).
+  expect(last?.text).toMatch(/진행 중 단계 아래/)
   expect(last?.text).not.toMatch(/한국어/)
   // 단계 이름과 명령 설명은 문법에 맞게, 명사로 끝나는 개조식으로('~하기' 없이), 한 줄에 한 가지 일만.
   expect(last?.text).toMatch(/문법에 맞는 자연스러운 말/)
@@ -1480,4 +1482,161 @@ test('with no list a running command sits under the empty note, one blank row ap
   await ui.unmount()
   await w.clock.advance(5 * SEC)
   await call
+})
+
+// ── 2026-11-24 진행선 모양: 돌고 있는 명령은 진행 중 단계 아래에 ─────────
+
+// 패널에 그려진 줄(표시·세로선·점선으로 시작하는 Text)을 위에서부터.
+async function railRows(ui: { findAll: (q: { type: 'Text'; text: RegExp }) => Promise<{ text: string }[]> }) {
+  return (await ui.findAll({ type: 'Text', text: /^(◉|○|●|▲|–|┆|│) / })).map(t => t.text)
+}
+
+// 설명이 있는 5초짜리 셸 명령들을 띄우고 1초 넘게 기다린다(실행 중 줄은 1초 뒤에 보인다).
+async function runBash($: Kit, w: ReturnType<typeof world>, ...descriptions: string[]) {
+  const calls = descriptions.map((d, i) =>
+    $.tool.call({ tool: 'Bash', command: `job ${i}`, description: d } as unknown as CallInput),
+  )
+  await w.clock.settle()
+  await w.clock.advance(2500)
+  return calls
+}
+
+test('running commands hang under the step underway', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  const calls = await runBash($, w, '테스트 실행')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const rows = await railRows(ui)
+  expect(rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1]).toBe('┆ 테스트 실행')
+  // 맨 위 단계 아래 점선은 그 단계의 색.
+  expect((await ui.find({ type: 'Text', text: /^┆$/ }))?.props.color).toBe('claude')
+  expect(await ui.find({ type: 'Box', key: 'calls' })).toBeUndefined()
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('inside a group the command line keeps the rail', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
+  const calls = await runBash($, w, '테스트 실행')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const rows = await railRows(ui)
+  expect(rows[rows.findIndex(r => /^│ ◉ 메뉴 화면/.test(r)) + 1]).toBe('│ ┆ 테스트 실행')
+  expect(await ui.find({ type: 'Box', key: 'calls' })).toBeUndefined()
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('with two steps underway the command goes under the one started last', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
+  const calls = await runBash($, w, '테스트 실행')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /^│ ┆ 테스트 실행$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^┆ 테스트 실행$/ })).toBeUndefined()
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('with only a blocked step the command goes to the bottom', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'c', status: 'blocked' }))
+  const calls = await runBash($, w, '테스트 실행')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect((await ui.find({ type: 'Box', key: 'calls' }))?.props.marginTop).toBe(1)
+  expect(await ui.find({ type: 'Text', text: /^┆ 테스트 실행$/ })).toBeDefined()
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('a note comes before the commands under the same step', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing', note: '자료 12장' }))
+  const calls = await runBash($, w, '테스트 실행')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const rows = await railRows(ui)
+  expect(rows[rows.indexOf('┆ 자료 12장') + 1]).toBe('┆ 테스트 실행')
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('hanging commands are counted so the pane does not scroll', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await longUnderway($, w)
+  const calls = await runBash($, w, '작업1', '작업2', '작업3')
+
+  // 예정 3개 16줄, 2개 14줄, 1개 12줄. 명령 3줄을 더하면 15줄에는 예정 1개만 들어간다.
+  // 단계 아래 붙은 명령은 빈 줄을 따로 두지 않으므로 마지막에 끝난 단계(목차 구성)도 남는다.
+  const ui = await $.ui.mount(pane('terminal', 40, 15))
+  expect(await texts(ui, /○ 그림 삽입/, /맞춤법 검사/, /^┆ 작업3$/, /● 목차 구성/)).toEqual([true, false, true, true])
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('a hanging command line fits a narrow pane', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Read')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
+  const calls = ['load.py', 'chat.py', 'app.py', 'runs.py', 'store.py'].map(f =>
+    $.tool.call({ tool: 'Read', file_path: `C:/Users/me/Proj/db/${f}` } as unknown as CallInput),
+  )
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  const ui = await $.ui.mount(pane('terminal', 24))
+  const lines = (await ui.findAll({ type: 'Text', text: /^│ ┆ / })).map(l => l.text)
+  expect(lines.length).toBe(1)
+  for (const l of lines) expect(cells(l)).toBeLessThanOrEqual(24)
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('more than five commands under a step count the rest', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  const calls = await runBash($, w, '작업1', '작업2', '작업3', '작업4', '작업5', '작업6', '작업7')
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.findAll({ type: 'Text', text: /^┆ 작업/ })).toHaveLength(5)
+  expect(await ui.find({ type: 'Text', text: /^┆ 외 2개$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^외 2개$/ }))?.props.dimColor).toBe(true)
+  expect(await ui.find({ type: 'Box', key: 'calls' })).toBeUndefined()
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
 })

@@ -84,7 +84,7 @@ const RULES = {
     '- 하는 도중 할 일이 늘거나 바뀌면 같은 title로 다시 "plan"을 불러 목록을 맞춘다(같은 id 단계의 상태와 시간은 이어진다). 다른 일을 시작하면 새 title로 "plan"을 부른다.',
     '- 사용자 메시지에 "[진행 상황 패널]" 안내가 붙어 있으면 이 창이 이어받은 목록이 있다는 뜻이다. 지금 하려는 일과 같은 일이면 그 목록을 이어서 update하고, 다른 일이면 plan으로 새로 적는다. action "show"로 지금 목록을 볼 수 있다.',
     '- 다른 할 일 기록 도구를 함께 쓰고 있으면 그 기록도 평소대로 같은 때에 함께 고친다.',
-    '- 패널 아래 "실행 중" 칸에는 셸 명령(Bash·PowerShell)의 description이 그대로 보인다. description은 사용자가 쓰는 언어로, 무엇을 하는지 알 수 있게 짧게(15자 안팎) 적는다.',
+    '- 패널의 진행 중 단계 아래에는 지금 돌고 있는 셸 명령(Bash·PowerShell)의 description이 그대로 보인다. description은 사용자가 쓰는 언어로, 무엇을 하는지 알 수 있게 짧게(15자 안팎) 적는다.',
     "- label과 description은 그 언어의 문법에 맞는 자연스러운 말로, 명사로 끝나는 짧은 개조식으로 적는다(예: '자료 수집', '초안 작성', '테스트 실행'. '~하기'·'~함'으로 끝내지 않는다). 두 가지 일을 한 줄에 이어 붙이지 않는다.",
     '- 메인 대화에서만 쓴다. 서브 에이전트는 쓰지 않는다.',
   ].join('\n'),
@@ -362,6 +362,15 @@ function groupCalls(visible: Running[]): CallGroup[] {
     } else groups.push({ label: c.label, kind: c.kind, targets: c.target ? [c.target] : [], count: 1 })
   }
   return groups
+}
+
+// 돌고 있는 명령을 붙일 단계: 진행 중인 아래 단계 가운데 가장 나중에 시작한 것. 없으면 맨 아래에 둔다.
+function callsAt(ls: Step[]): string | undefined {
+  let at: Step | undefined
+  for (const s of ls) {
+    if (s.status === 'doing' && (!at || (s.startedAt ?? 0) > (at.startedAt ?? 0))) at = s
+  }
+  return at?.id
 }
 
 function backgroundTaskOf(r: unknown): string | undefined {
@@ -887,16 +896,24 @@ export const register: Register = on => {
       return out
     }
 
-    // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게).
+    // 돌고 있는 명령: 진행 중 단계 아래에. 그런 단계가 없으면 맨 아래에.
+    const groups = groupCalls(calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS))
+    const at = b ? callsAt(leaves(b.steps)) : undefined
+
+    // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게), 이어서 그 단계에서 돌고 있는 명령.
     const hang = (l: Lead, step: Step): RenderChildren[] => {
-      if (!step.note) return []
-      const note = cut(step.note, cols - leadCells(l))
-      return [
-        <Text>
-          {leadOf(l)}
-          {step.status === 'blocked' ? <Text color="warning">{note}</Text> : <Text dimColor>{note}</Text>}
-        </Text>,
-      ]
+      const out: RenderChildren[] = []
+      if (step.note) {
+        const note = cut(step.note, cols - leadCells(l))
+        out.push(
+          <Text>
+            {leadOf(l)}
+            {step.status === 'blocked' ? <Text color="warning">{note}</Text> : <Text dimColor>{note}</Text>}
+          </Text>,
+        )
+      }
+      if (step.id === at) out.push(...callLines(l, groups))
+      return out
     }
 
     // 숨긴 것의 개수 줄: "┆ 완료 3개 더", "┆ 예정 2개 더".
@@ -908,9 +925,7 @@ export const register: Register = on => {
       </Text>
     )
 
-    // 진행 중 단계가 없으면 명령은 맨 아래에.
-    const groups = groupCalls(calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS))
-    const bottom = groups.length ? callLines({ dot: 'subtle' }, groups) : []
+    const bottom = groups.length && !at ? callLines({ dot: 'subtle' }, groups) : []
 
     const body: RenderChildren[] = []
     if (!b) {
