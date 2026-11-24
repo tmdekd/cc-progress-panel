@@ -219,28 +219,41 @@ function totalTime(ls: Step[], t: number): string {
 
 // 짧게 보기(사용자가 정함, 2026-11-19): 진행 중·막힘은 늘 모두, 끝난 것은 가장 최근에 끝난 1개,
 // 예정은 앞에서 3개까지. 패널 높이에 안 들어가면 FITS 의 다음 모양으로 줄여 스크롤이 생기지 않게 한다.
-type Fit = { todo: number; recent: boolean; gaps: boolean }
+// 끝 단계(2026-11-24): 마지막 단계가 예정이면 일이 어디서 끝나는지 보이게 늘 그린다(end). 거의 마지막 모양에서만 뺀다.
+type Fit = { todo: number; recent: boolean; gaps: boolean; end: boolean }
 const FITS: readonly Fit[] = [
-  { todo: 3, recent: true, gaps: true },
-  { todo: 2, recent: true, gaps: true },
-  { todo: 1, recent: true, gaps: true },
-  { todo: 1, recent: false, gaps: true },
-  { todo: 0, recent: false, gaps: true },
-  { todo: 0, recent: false, gaps: false },
+  { todo: 3, recent: true, gaps: true, end: true },
+  { todo: 2, recent: true, gaps: true, end: true },
+  { todo: 1, recent: true, gaps: true, end: true },
+  { todo: 1, recent: false, gaps: true, end: true },
+  { todo: 0, recent: false, gaps: true, end: true },
+  { todo: 0, recent: false, gaps: true, end: false },
+  { todo: 0, recent: false, gaps: false, end: false },
 ]
 // 패널 머리: 제목 1줄 + 막대와 숫자 1줄 + 빈 줄 1줄.
 const HEAD_ROWS = 3
 
-function compact(ls: Step[], fit: Fit): { ids: Set<string>; moreDone: number; moreTodo: number } {
+function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreDone: number; moreTodo: number } {
   const ids = new Set(ls.filter(s => s.status === 'doing' || s.status === 'blocked').map(s => s.id))
   const fin = ls.filter(s => isFinal(s.status))
   const todo = ls.filter(s => s.status === 'todo')
   // 가장 늦게 끝난 것. 끝난 시각이 같으면 순서상 뒤의 것.
   const last = fin.reduce<Step | undefined>((a, s) => (a && (a.endedAt ?? -1) > (s.endedAt ?? -1) ? a : s), undefined)
-  const keep = fit.recent && last ? last : undefined
-  if (keep) ids.add(keep.id)
+  if (fit.recent && last) ids.add(last.id)
   for (const s of todo.slice(0, fit.todo)) ids.add(s.id)
-  return { ids, moreDone: fin.length - (keep ? 1 : 0), moreTodo: Math.max(0, todo.length - fit.todo) }
+  const end = ls.at(-1)
+  if (fit.end && end?.status === 'todo') ids.add(end.id)
+  // 숨는 것이 딱 1개이고 맨 위 단계이며 메모가 없으면 "1개 더" 대신 그 단계를 그린다. 줄 수가 같다.
+  const top = new Set(steps.map(s => s.id))
+  for (const group of [fin, todo]) {
+    const hidden = group.filter(s => !ids.has(s.id))
+    if (hidden.length === 1 && top.has(hidden[0]!.id) && !hidden[0]!.note) ids.add(hidden[0]!.id)
+  }
+  return {
+    ids,
+    moreDone: fin.filter(s => !ids.has(s.id)).length,
+    moreTodo: todo.filter(s => !ids.has(s.id)).length,
+  }
 }
 
 // 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자(U+FE0F 모양 고르기, U+200D 잇기)는 0칸.
@@ -1003,7 +1016,7 @@ export const register: Register = on => {
 
       // 한 모양(fit)으로 놓을 것과 그 줄 수. 그릴 줄로 세므로 셈과 그림이 어긋나지 않는다.
       const layout = (fit: Fit) => {
-        const { ids, moreDone, moreTodo } = compact(ls, fit)
+        const { ids, moreDone, moreTodo } = compact(ls, fit, b.steps)
         // 놓을 것: 숨긴 끝남, 보이는 단계 묶음들, 숨긴 예정. 이 차례로 세로선 색을 정한다.
         const order: { id: string; status: StepStatus; step?: Step; kids: Step[] }[] = []
         if (moreDone) order.push({ id: 'more-done', status: 'done', kids: [] })
@@ -1014,7 +1027,10 @@ export const register: Register = on => {
           if (kids.length ? seen.length === 0 : !ids.has(s.id)) continue
           order.push({ id: `step-${s.id}`, status: shown(s).status, step: s, kids: seen })
         }
-        if (moreTodo) order.push({ id: 'more-todo', status: 'todo', kids: [] })
+        // 숨긴 예정은 끝 단계가 보이면 그 앞(숨긴 것은 모두 끝 단계보다 앞에 있다), 아니면 맨 끝에.
+        const end = ls.at(-1)
+        const before = end && ids.has(end.id) ? order.length - 1 : order.length
+        if (moreTodo) order.splice(before, 0, { id: 'more-todo', status: 'todo', kids: [] })
         // 세로선(사용자가 고름, 2026-11-24): 지나온 곳 초록, 지금 묶음은 그 상태 색, 남은 곳 회색.
         // 지금 묶음 = 처음 끝나지 않은 것.
         const open = order.findIndex(o => !isFinal(o.status))

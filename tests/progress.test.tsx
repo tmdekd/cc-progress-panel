@@ -880,13 +880,12 @@ test('top-level steps are joined by a rail row, and the head keeps a blank row',
   await $.tool.call(tool(PLAN))
 
   const ui = await $.ui.mount(pane('terminal'))
-  // 세로선 줄 2(사진 모으기→화면, 화면→예정 1개 더) + 묶음 안 2(메뉴 화면, 주문 화면). 아직 아무것도 지나지 않아 모두 회색.
+  // 세로선 줄 2(사진 모으기→화면, 화면→공개하기) + 묶음 안 2(메뉴 화면, 주문 화면). 아직 아무것도 지나지 않아 모두 회색.
   const rails = await ui.findAll({ type: 'Text', text: /^│$/ })
   expect(rails.map(r => r.props.color)).toEqual(['subtle', 'subtle', 'subtle', 'subtle'])
-  // 예정은 셋(사진 모으기, 메뉴 화면, 주문 화면)까지만. 넷째(공개하기)는 개수로 적는다.
-  expect(await ui.find({ type: 'Box', key: 'step-c' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^┆ 예정 1개 더$/ })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /^예정 1개 더$/ }))?.props.dimColor).toBe(true)
+  // 예정 앞 셋(사진 모으기, 메뉴 화면, 주문 화면)과 끝 단계(공개하기)가 모두 보여 개수 줄이 없다.
+  expect(await ui.find({ type: 'Box', key: 'step-c' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /개 더$/ })).toBeUndefined()
   expect((await ui.find({ type: 'Box', key: 'head' }))?.props.marginBottom).toBe(1)
   expect(await ui.find({ type: 'Box', key: 'calls' })).toBeUndefined()
   await ui.unmount()
@@ -1173,18 +1172,33 @@ async function texts(ui: { findAll: (q: { type: 'Text' }) => Promise<{ text: str
   return want.map(re => all.some(t => re.test(t)))
 }
 
-test('a long list shows the last finished step, every step underway and the next three', async ($, on) => {
+test('a long list in a tall pane shows every step instead of a one-step count', async ($, on) => {
   const w = world(on)
   await longUnderway($, w)
 
-  // 머리 3 + 놓인 것 7 + 세로선 6 = 16줄. 40줄에 들어간다.
+  // 예정 3개 모양: 숨는 끝남(자료 수집)과 예정(수정 반영)이 하나씩이라 개수 줄 대신 그 단계를 그린다.
+  // 머리 3 + 단계 8 + 세로선 7 = 18줄. 40줄에 들어간다.
   const ui = await $.ui.mount(pane('terminal', 40, 40))
   expect(
-    await texts(ui, /^┆ 완료 1개 더$/, /● 목차 구성/, /◉ 초안 작성/, /○ 그림 삽입/, /○ 맞춤법 검사/, /○ 검토 요청/, /^┆ 예정 2개 더$/),
-  ).toEqual([true, true, true, true, true, true, true])
-  expect(await texts(ui, /자료 수집/, /수정 반영/, /게시/)).toEqual([false, false, false])
+    await texts(ui, /^● 자료 수집/, /^● 목차 구성/, /^◉ 초안 작성/, /^○ 그림 삽입/, /^○ 맞춤법 검사/, /^○ 검토 요청/, /^○ 수정 반영/, /^○ 게시/),
+  ).toEqual([true, true, true, true, true, true, true, true])
+  expect(await ui.find({ type: 'Text', text: /개 더$/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: / 2\/8 · 2분째$/ })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /^완료 1개 더$/ }))?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+test('a long list keeps the last finished step, the next steps and the final step', async ($, on) => {
+  const w = world(on)
+  await longUnderway($, w)
+
+  // 예정 3개 18줄, 2개 16줄. 16줄이면 2개: 숨는 예정 둘(검토 요청, 수정 반영)은 끝 단계 앞에 개수로.
+  const ui = await $.ui.mount(pane('terminal', 40, 16))
+  const all = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  const want = [/^● 자료 수집/, /^● 목차 구성/, /^◉ 초안 작성/, /^○ 그림 삽입/, /^○ 맞춤법 검사/, /^┆ 예정 2개 더$/, /^○ 게시/]
+  const at = want.map(re => all.findIndex(t => re.test(t)))
+  expect(at.every(i => i >= 0)).toBe(true)
+  expect([...at].sort((x, y) => x - y)).toEqual(at)
+  expect(await texts(ui, /검토 요청/, /수정 반영/)).toEqual([false, false])
   expect((await ui.find({ type: 'Text', text: /^예정 2개 더$/ }))?.props.dimColor).toBe(true)
   await ui.unmount()
 })
@@ -1193,15 +1207,18 @@ test('the finished step kept is the one that ended last, not the last in order',
   const w = world(on)
   await $.session.start(START)
   await $.tool.call(tool(LONG))
+  // 끝난 차례: 목차 구성 → 초안 작성 → 자료 수집. 숨는 끝남이 둘이라 "완료 2개 더"와 자료 수집만 보인다.
   await $.tool.call(tool({ action: 'update', id: 's2', status: 'doing' }))
   await w.clock.advance(1 * MIN)
   await $.tool.call(tool({ action: 'update', id: 's2', status: 'done' }))
   await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 's3', status: 'done' }))
+  await w.clock.advance(1 * MIN)
   await $.tool.call(tool({ action: 'update', id: 's1', status: 'done' }))
-  await $.tool.call(tool({ action: 'update', id: 's3', status: 'doing' }))
+  await $.tool.call(tool({ action: 'update', id: 's4', status: 'doing' }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await texts(ui, /● 자료 수집/, /목차 구성/)).toEqual([true, false])
+  expect(await texts(ui, /● 자료 수집/, /목차 구성/, /초안 작성/, /^┆ 완료 2개 더$/)).toEqual([true, false, false, true])
   await ui.unmount()
 })
 
@@ -1209,16 +1226,17 @@ test('a shorter pane shows fewer upcoming steps so nothing scrolls', async ($, o
   const w = world(on)
   await longUnderway($, w)
 
-  // 예정 3개는 16줄, 2개는 14줄, 1개는 12줄. 13줄이면 1개.
+  // 예정 3개 18줄, 2개 16줄, 1개 14줄, 끝난 것까지 빼면 12줄. 13줄이면 12줄 모양. 끝 단계(게시)는 남는다.
   const ui = await $.ui.mount(pane('terminal', 40, 13))
-  expect(await texts(ui, /^┆ 완료 1개 더$/, /● 목차 구성/, /◉ 초안 작성/, /○ 그림 삽입/, /^┆ 예정 4개 더$/)).toEqual([
+  expect(await texts(ui, /^┆ 완료 2개 더$/, /◉ 초안 작성/, /○ 그림 삽입/, /^┆ 예정 3개 더$/, /^○ 게시/)).toEqual([
     true,
     true,
     true,
     true,
     true,
   ])
-  expect(await texts(ui, /맞춤법 검사/, /검토 요청/)).toEqual([false, false])
+  expect(await texts(ui, /목차 구성/, /맞춤법 검사/, /검토 요청/)).toEqual([false, false, false])
+  expect((await ui.find({ type: 'Text', text: /^완료 2개 더$/ }))?.props.dimColor).toBe(true)
   await ui.unmount()
 })
 
@@ -1227,7 +1245,7 @@ test('a very short pane drops the finished step, then the blank rows, never a st
   await longUnderway($, w)
   await $.tool.call(tool({ action: 'update', id: 's4', status: 'doing' }))
 
-  // 진행 중 둘. 예정 1개·완료 빼기 12줄, 예정 0개 10줄, 세로선 줄까지 빼면 7줄.
+  // 진행 중 둘. 예정 1개·완료 빼기 14줄, 예정 0개 12줄, 끝 단계 빼면 10줄, 세로선 줄까지 빼면 7줄.
   let ui = await $.ui.mount(pane('terminal', 40, 9))
   expect(await texts(ui, /^┆ 완료 2개 더$/, /◉ 초안 작성/, /◉ 그림 삽입/, /^┆ 예정 4개 더$/)).toEqual([true, true, true, true])
   expect(await texts(ui, /목차 구성/, /맞춤법 검사/)).toEqual([false, false])
@@ -1260,13 +1278,14 @@ test('a group with none of its steps shown is left out', async ($, on) => {
             { id: 'g2', label: '리허설' },
           ],
         },
+        { id: 'e', label: '뒷정리' },
       ],
     }),
   )
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
 
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await texts(ui, /^┆ 예정 2개 더$/, /^발표$/, /슬라이드/)).toEqual([true, false, false])
+  expect(await texts(ui, /^┆ 예정 2개 더$/, /^발표$/, /슬라이드/, /^○ 뒷정리$/)).toEqual([true, false, false, true])
   expect(await ui.find({ type: 'Box', key: 'step-g' })).toBeUndefined()
   await ui.unmount()
 })
@@ -1597,10 +1616,10 @@ test('hanging commands are counted so the pane does not scroll', async ($, on) =
   await longUnderway($, w)
   const calls = await runBash($, w, '작업1', '작업2', '작업3')
 
-  // 예정 3개 16줄, 2개 14줄, 1개 12줄. 명령 3줄을 더하면 15줄에는 예정 1개만 들어간다.
-  // 단계 아래 붙은 명령은 빈 줄을 따로 두지 않으므로 마지막에 끝난 단계(목차 구성)도 남는다.
+  // 예정 3개 18줄, 2개 16줄, 1개 14줄, 끝난 것 빼면 12줄. 명령 3줄을 더하면 15줄에는 12줄 모양만 들어간다.
+  // 단계 아래 붙은 명령은 빈 줄을 따로 두지 않는다. 끝 단계(게시)는 남는다.
   const ui = await $.ui.mount(pane('terminal', 40, 15))
-  expect(await texts(ui, /○ 그림 삽입/, /맞춤법 검사/, /^┆ 작업3$/, /● 목차 구성/)).toEqual([true, false, true, true])
+  expect(await texts(ui, /○ 그림 삽입/, /맞춤법 검사/, /^┆ 작업3$/, /목차 구성/, /^○ 게시/)).toEqual([true, false, true, false, true])
   await ui.unmount()
   await w.clock.advance(5 * SEC)
   await Promise.all(calls)
@@ -1731,5 +1750,71 @@ test('the bar is full only when all is done and shows any finished step', async 
   await $.tool.call(hundred(99))
   ui = await $.ui.mount(pane('terminal', 40))
   expect(await ui.find({ type: 'Text', text: /^━+─+ 99\/100$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+// ── 2026-11-24 손질: 끝 단계 ─────────────────────────────────────────────
+
+test('the final step stays in view even when it sits in a group', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '발표 준비',
+      steps: [
+        { id: 'a', label: '준비' },
+        { id: 'b', label: '자료 조사' },
+        { id: 'c', label: '내용 정리' },
+        { id: 'd', label: '요약' },
+        { id: 'e', label: '연습' },
+        {
+          id: 'g',
+          label: '발표',
+          children: [
+            { id: 'g1', label: '슬라이드' },
+            { id: 'g2', label: '리허설' },
+          ],
+        },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+
+  // 예정 3개 15줄, 2개 13줄, 1개 11줄, 0개 9줄. 10줄이면 0개: 준비, 예정 5개 더, 발표, 리허설.
+  const ui = await $.ui.mount(pane('terminal', 40, 10))
+  expect(await texts(ui, /^◉ 준비/, /^┆ 예정 5개 더$/, /^발표$/, /○ 리허설$/)).toEqual([true, true, true, true])
+  expect(await texts(ui, /자료 조사/, /슬라이드/)).toEqual([false, false])
+  await ui.unmount()
+})
+
+test('a single hidden step with a note stays a count so the pane does not grow', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '여행',
+      steps: [
+        { id: 'a', label: '일정' },
+        { id: 'b', label: '숙소' },
+        { id: 'c', label: '교통' },
+        { id: 'd', label: '짐' },
+        { id: 'e', label: '환전' },
+        { id: 'f', label: '출발' },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+
+  // 숨는 예정은 환전 하나. 메모가 없으면 그 단계를 그린다.
+  let ui = await $.ui.mount(pane('terminal'))
+  expect(await texts(ui, /^○ 환전$/, /개 더$/)).toEqual([true, false])
+  await ui.unmount()
+
+  // 메모가 있으면 그리면 한 줄 늘어나므로 개수로 둔다.
+  await $.tool.call(tool({ action: 'update', id: 'e', status: 'todo', note: '은행 예약' }))
+  ui = await $.ui.mount(pane('terminal'))
+  expect(await texts(ui, /^┆ 예정 1개 더$/, /환전/, /^○ 출발$/)).toEqual([true, false, true])
   await ui.unmount()
 })
