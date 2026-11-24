@@ -34,6 +34,10 @@ export type BoardEntry = {
 export type Running = {
   id: string
   label: string
+  // 파일·검색 도구의 종류(예: '파일 읽기')와 대상(예: 'chat.py'). 같은 종류는 패널에서 한 줄로 묶인다.
+  // 없어도 되는 칸이라 옛 값도 그대로 읽힌다(모양 태그를 올리지 않는다).
+  kind?: string
+  target?: string
   startedAt: number
   isBackground: boolean
   taskId?: string
