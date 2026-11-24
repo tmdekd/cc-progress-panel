@@ -16,6 +16,8 @@ const KEEP = 30
 const SHOW_AFTER_MS = 1000
 // 실행 중 칸에 보이는 호출 줄 수.
 const MAX_CALLS = 5
+// 머리 막대가 이보다 짧아지면 걸린 시간을 뺀다.
+const MIN_BAR = 4
 // 백그라운드 명령은 끝 알림을 놓쳐도 이 시간이 지나면 지운다.
 const BACKGROUND_TTL_MS = 12 * 60 * 60_000
 // 입력창 위 알림이 보이는 시간과 한 번에 쌓아 두는 줄 수.
@@ -241,22 +243,61 @@ function compact(ls: Step[], fit: Fit): { ids: Set<string>; moreDone: number; mo
   return { ids, moreDone: fin.length - (keep ? 1 : 0), moreTodo: Math.max(0, todo.length - fit.todo) }
 }
 
-// 화면 폭: 한글·전각은 2칸.
-const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/
+// 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자(U+FE0F 모양 고르기, U+200D 잇기)는 0칸.
+const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|\p{Emoji_Presentation}/u
+
+function width(ch: string): number {
+  const c = ch.codePointAt(0) ?? 0
+  if (c === 0xfe0f || c === 0x200d) return 0
+  return WIDE.test(ch) ? 2 : 1
+}
 
 function cells(text: string): number {
   let n = 0
-  for (const ch of text) n += WIDE.test(ch) ? 2 : 1
+  for (const ch of text) n += width(ch)
   return n
 }
 
+// 번호 글자(원문자 ①, 괄호 숫자 ⑴, 원 영문자 Ⓐ, 로마 숫자 Ⅳ 등)는 폭이 모호하다. 터미널은 1칸을 주는데
+// 글꼴이 2칸으로 그려 다음 글자를 덮는다. 보통 글자로 바꾸고, 붙은 번호끼리는 쉼표로 나눈다(④⑤ → 4,5).
+// 한글 호환 자모(ㅋ)가 바뀌지 않게 글 전체가 아니라 번호 글자만 NFKC로 바꾼다.
+function numeral(c: number): string | undefined {
+  if (c >= 0x2776 && c <= 0x2793) return String(((c - 0x2776) % 10) + 1) // ❶–❿, ➀–➉, ➊–➓
+  if (c >= 0x24eb && c <= 0x24f4) return String(c - 0x24eb + 11) // ⓫–⓴
+  if (c >= 0x24f5 && c <= 0x24fe) return String(c - 0x24f5 + 1) // ⓵–⓾
+  if (c === 0x24ff) return '0' // ⓿
+  if ((c >= 0x2460 && c <= 0x24ff) || (c >= 0x2160 && c <= 0x2188)) {
+    const s = String.fromCodePoint(c).normalize('NFKC')
+    return s === String.fromCodePoint(c) ? undefined : s
+  }
+  return undefined
+}
+
+function plain(text: string): string {
+  let out = ''
+  let after = false
+  for (const ch of text) {
+    const n = numeral(ch.codePointAt(0) ?? 0)
+    if (n === undefined) {
+      out += ch
+      after = false
+      continue
+    }
+    if (after && /[0-9A-Za-z]$/.test(out) && /^[0-9A-Za-z]/.test(n)) out += ','
+    out += n
+    after = true
+  }
+  return out
+}
+
 function cut(text: string, room: number): string {
+  text = plain(text)
   if (cells(text) <= room) return text
   if (room <= 1) return room === 1 ? '…' : ''
   let out = ''
   let used = 0
   for (const ch of text) {
-    const w = WIDE.test(ch) ? 2 : 1
+    const w = width(ch)
     if (used + w > room - 1) break
     out += ch
     used += w
@@ -938,11 +979,15 @@ export const register: Register = on => {
       const ls = leaves(b.steps)
       const done = ls.filter(s => isFinal(s.status)).length
       // 머리 둘째 줄: 가는 막대(끝난 몫 초록) + 완료 수/전체(굵게) + 전체 걸린 시간(흐리게).
+      // 폭이 모자라 막대가 MIN_BAR칸보다 짧아지면 시간을 뺀다.
       const count = `${done}/${ls.length}`
       const took = totalTime(ls, w)
-      const tail = took ? ` · ${took}` : ''
-      const barW = Math.max(0, cols - cells(count) - cells(tail) - 1)
-      const fill = ls.length ? Math.round((barW * done) / ls.length) : 0
+      const room = (t: string) => cols - cells(count) - cells(t) - 1
+      const tail = took && room(` · ${took}`) >= MIN_BAR ? ` · ${took}` : ''
+      const barW = Math.max(0, room(tail))
+      // 막대는 다 끝났을 때만 꽉 차고, 하나라도 끝났으면 한 칸은 채운다.
+      const part = Math.min(barW - 1, Math.max(done ? 1 : 0, Math.round((barW * done) / ls.length)))
+      const fill = !ls.length ? 0 : done === ls.length ? barW : Math.max(0, part)
       body.push(
         <Box key="head" flexDirection="column" marginBottom={1}>
           <Text bold>{cut(b.title, cols)}</Text>

@@ -131,10 +131,14 @@ function world(on: On, o: { sessionId?: string; store?: Record<string, unknown> 
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
 
-// 화면 폭: 한글·전각은 2칸.
+// 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자는 0칸.
 function cells(text: string): number {
   let n = 0
-  for (const ch of text) n += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1
+  for (const ch of text) {
+    if (/[\ufe0f\u200d]/.test(ch)) continue
+    if (/\p{Emoji_Presentation}/u.test(ch)) n += 1
+    n += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1
+  }
   return n
 }
 
@@ -1639,4 +1643,93 @@ test('more than five commands under a step count the rest', async ($, on) => {
   await ui.unmount()
   await w.clock.advance(5 * SEC)
   await Promise.all(calls)
+})
+
+// ── 2026-11-24 손질: 원문자 겹침, 이모지 폭, 좁은 패널의 머리 막대 ─────────
+// 원문자(①…)는 터미널이 1칸을 주는데 글꼴이 2칸으로 그려 다음 글자를 덮는다(사용자 화면). 보통 숫자로 바꿔 그린다.
+
+test('circled numbers are drawn as plain digits so they do not overlap', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '그림 ③ 정리',
+      steps: [
+        { id: 'x', label: '넘겨주기(그림 ③)' },
+        { id: 'y', label: '도구와 인자(그림 ④⑤)' },
+        { id: 'z', label: 'Ⅳ장' },
+        { id: 'k', label: 'ㅋㅋ 메모' },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'x', status: 'doing', note: '❶ 확인' }))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    expect(
+      await texts(ui, /^◉ 넘겨주기\(그림 3\)/, /^○ 도구와 인자\(그림 4,5\)$/, /^○ IV장$/, /^○ ㅋㅋ 메모$/, /^┆ 1 확인$/, /^그림 3 정리$/),
+    ).toEqual([true, true, true, true, true, true])
+    expect(await ui.find({ type: 'Text', text: /[③④⑤❶Ⅳ]/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('the box above the prompt also draws circled numbers as digits', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(tool({ action: 'plan', title: '그림 정리', steps: [{ id: 'x', label: '넘겨주기(그림 ③)' }] }))
+  await $.tool.call(tool({ action: 'update', id: 'x', status: 'blocked', note: '그림 ⑤ 없음' }))
+
+  const b = await $.ui.mount(band('terminal'))
+  expect(await b.find({ type: 'Text', text: /^⚠ 넘겨주기\(그림 3\)에서 막힘: 그림 5 없음$/ })).toBeDefined()
+  await b.unmount()
+})
+
+test('an emoji counts as two cells so the time stays at the right edge', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool({ action: 'plan', title: '배포', steps: [{ id: 'x', label: '배포 🚀' }, { id: 'y', label: '확인' }] }))
+  await $.tool.call(tool({ action: 'update', id: 'x', status: 'doing' }))
+  await w.clock.advance(5 * MIN)
+
+  const ui = await $.ui.mount(pane('terminal', 40))
+  const row = await ui.find({ type: 'Text', text: /^◉ 배포 🚀 +\d+분째$/ })
+  expect(cells(row?.text ?? '')).toBe(40)
+  await ui.unmount()
+})
+
+test('in a very narrow pane the head line drops the time before it overflows', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(72 * MIN)
+
+  const ui = await $.ui.mount(pane('terminal', 16))
+  const bar = await ui.find({ type: 'Text', text: /^─+ 0\/4$/ })
+  expect(cells(bar?.text ?? '')).toBe(16)
+  await ui.unmount()
+})
+
+// 단계가 막대 칸보다 훨씬 많아도 막대는 다 끝났을 때만 꽉 차고, 하나라도 끝났으면 한 칸은 채운다.
+test('the bar is full only when all is done and shows any finished step', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  const hundred = (done: number) =>
+    tool({
+      action: 'plan',
+      title: '백 단계',
+      steps: Array.from({ length: 100 }, (_, i) => ({ id: `n${i}`, label: `단계 ${i}`, ...(i < done ? { status: 'done' } : {}) })),
+    })
+
+  await $.tool.call(hundred(1))
+  let ui = await $.ui.mount(pane('terminal', 40))
+  expect(await ui.find({ type: 'Text', text: /^━+─+ 1\/100$/ })).toBeDefined()
+  await ui.unmount()
+
+  await $.tool.call(hundred(99))
+  ui = await $.ui.mount(pane('terminal', 40))
+  expect(await ui.find({ type: 'Text', text: /^━+─+ 99\/100$/ })).toBeDefined()
+  await ui.unmount()
 })
