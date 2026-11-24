@@ -207,7 +207,7 @@
 
 ### Task 4: 명령이 붙는 자리와 테스트 빈틈
 
-**예상 시간:** 40분 · **선행 Task:** Task 3 · **승인 지점:** 없음 · **상태:** 대기
+**예상 시간:** 40분 · **선행 Task:** Task 3 · **승인 지점:** 없음 · **상태:** 완료: 564048d, 98/98, feature/panel-legibility
 
 **Files:**
 - Modify: `hooks/register.tsx` (`buildSteps`, update의 doing 처리, `callsAt`, Pane의 명령 나누기, 주석 17·310줄 근처)
