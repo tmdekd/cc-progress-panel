@@ -61,7 +61,7 @@
 
 ### Task 1: 글자 폭과 머리 막대
 
-**예상 시간:** 40분 · **선행 Task:** 없음 · **승인 지점:** 없음 · **상태:** 대기
+**예상 시간:** 40분 · **선행 Task:** 없음 · **승인 지점:** 없음 · **상태:** 완료: e1a53ce, 87/87, feature/panel-legibility
 
 **Files:**
 - Modify: `hooks/register.tsx` (`cells`, `cut`, 새 `plain`, Pane 훅 머리 블록)
@@ -101,7 +101,7 @@
 
 ### Task 2: 끝 단계를 늘 보이기
 
-**예상 시간:** 50분 · **선행 Task:** Task 1 · **승인 지점:** 없음 · **상태:** 대기
+**예상 시간:** 50분 · **선행 Task:** Task 1 · **승인 지점:** 없음 · **상태:** 완료: 9624973, 90/90, feature/panel-legibility
 
 **Files:**
 - Modify: `hooks/register.tsx` (`Fit`, `FITS`, `compact`, Pane `layout`의 `more-todo` 자리)
@@ -146,7 +146,7 @@
 
 ### Task 3: 가지와 명령 줄
 
-**예상 시간:** 60분 · **선행 Task:** Task 2 · **승인 지점:** 없음 · **상태:** 대기
+**예상 시간:** 60분 · **선행 Task:** Task 2 · **승인 지점:** 없음 · **상태:** 완료: c8be339, 93/93, feature/panel-legibility
 
 **Files:**
 - Modify: `hooks/register.tsx` (`labelOf`, Pane `row`·`callLines`·`hang`·`leadOf`; `groupCalls`·`fitNames`·`CallGroup` 지움)
