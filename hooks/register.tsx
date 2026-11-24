@@ -305,22 +305,49 @@ function shortCommand(command: string): string {
   return s.trim()
 }
 
-function labelOf(e: { tool: string }): string {
+// 실행 중 칸 한 줄의 글. 파일·검색 도구는 종류와 대상을 따로 두어 같은 종류를 한 줄로 묶는다.
+type Label = { label: string; kind?: string; target?: string }
+
+function labelOf(e: { tool: string }): Label {
   const args = e as unknown as Record<string, unknown>
   const str = (v: unknown) => (typeof v === 'string' ? v : '')
+  // "- Read"만으로는 무엇을 보는지 모른다. 종류와 대상(파일 이름, 찾는 말, 주소)을 함께 보인다.
+  const of = (kind: string, target: string): Label => (target ? { label: `${kind}: ${target}`, kind, target } : { label: kind })
+  const file = (key: string) => str(args[key]).split(/[\\/]+/).filter(Boolean).pop() ?? ''
   // 명령은 Claude가 붙인 짧은 설명을 쓴다. 명령 첫 줄은 경로 때문에 잘려 무엇을 하는지 안 보인다.
   if (e.tool === 'Bash' || e.tool === 'PowerShell') {
-    return firstLine(str(args.description)) || shortCommand(str(args.command)) || e.tool
+    return { label: firstLine(str(args.description)) || shortCommand(str(args.command)) || e.tool }
   }
-  if (e.tool === 'Agent') return `에이전트: ${firstLine(str(args.description)) || '작업'}`
-  if (e.tool === 'Monitor') return `모니터: ${firstLine(str(args.description)) || '감시'}`
-  if (e.tool === 'WebSearch') return '웹 검색'
-  if (e.tool === 'WebFetch') return '웹 페이지 읽기'
-  if (e.tool === 'Skill') return str(args.skill) ? `스킬: ${str(args.skill)}` : e.tool
+  if (e.tool === 'Agent') return { label: `에이전트: ${firstLine(str(args.description)) || '작업'}` }
+  if (e.tool === 'Monitor') return { label: `모니터: ${firstLine(str(args.description)) || '감시'}` }
+  if (e.tool === 'Read') return of('파일 읽기', file('file_path'))
+  if (e.tool === 'Edit') return of('파일 수정', file('file_path'))
+  if (e.tool === 'Write') return of('파일 작성', file('file_path'))
+  if (e.tool === 'NotebookEdit') return of('파일 수정', file('notebook_path'))
+  if (e.tool === 'Grep') return of('코드 검색', str(args.pattern) && `"${firstLine(str(args.pattern))}"`)
+  if (e.tool === 'Glob') return of('파일 찾기', firstLine(str(args.pattern)))
+  if (e.tool === 'WebSearch') return of('웹 검색', firstLine(str(args.query)))
+  if (e.tool === 'WebFetch') return of('웹 페이지', /^[a-z]+:\/\/([^/?#]+)/i.exec(str(args.url))?.[1] ?? '')
+  if (e.tool === 'Skill') return { label: str(args.skill) ? `스킬: ${str(args.skill)}` : e.tool }
   // MCP 도구는 서버 이름이 길어 잘리므로 도구 이름만 보인다.
   const mcp = /^mcp__(.+?)__(.+)$/.exec(e.tool)
-  if (mcp) return mcp[2] ?? e.tool
-  return e.tool
+  if (mcp) return { label: mcp[2] ?? e.tool }
+  return { label: e.tool }
+}
+
+// 같은 종류의 대상들을 한 줄에: 폭에 들어가는 만큼 이름을 적고 나머지는 "외 N개".
+function groupText(kind: string, targets: string[], room: number): string {
+  const head = `${kind}: `
+  for (let k = targets.length; k >= 1; k--) {
+    const more = targets.length - k
+    const tail = more ? ` 외 ${more}개` : ''
+    const names = targets.slice(0, k).join(', ')
+    // 하나도 들어가지 않으면 첫 이름을 잘라서라도 남긴다.
+    if (k === 1 || cells(head + names + tail) <= room) {
+      return cut(head + cut(names, Math.max(1, room - cells(head) - cells(tail))) + tail, room)
+    }
+  }
+  return cut(kind, room)
 }
 
 function backgroundTaskOf(r: unknown): string | undefined {
@@ -702,7 +729,7 @@ export const register: Register = on => {
     const id = e.tool_use_id ?? `call-${(seq += 1)}`
     const label = labelOf(e)
     const t = await $.clock.now()
-    await update($, running, list => [...list, { id, label, startedAt: t, isBackground: false }])
+    await update($, running, list => [...list, { id, ...label, startedAt: t, isBackground: false }])
     await update($, now, () => t)
     await syncTicker($)
     const waits = WAITING.has(e.tool)
@@ -713,7 +740,7 @@ export const register: Register = on => {
       taskId = backgroundTaskOf(r)
       return r
     } finally {
-      const keep: Running[] = taskId ? [{ id, label, startedAt: t, isBackground: true, taskId }] : []
+      const keep: Running[] = taskId ? [{ id, ...label, startedAt: t, isBackground: true, taskId }] : []
       await update($, running, list => [...list.filter(x => x.id !== id), ...keep])
       await syncTicker($)
       if (waits && !between) await wake($, await $.clock.now())
@@ -824,9 +851,18 @@ export const register: Register = on => {
     const callLines: RenderChildren[] = [<Text color="subtle">{'─'.repeat(Math.min(cols, 40))}</Text>]
     if (visible.length === 0) callLines.push(<Text dimColor>실행 중인 작업 없음</Text>)
     // "- 하는 일" 목록만. 머리말과 걸린 시간은 사용자 요청으로 뺐다(2026-11-18). 백그라운드도 같은 모양.
+    // 같은 종류(파일 읽기 등)는 한 줄로 묶는다. 줄 순서는 그 종류가 처음 시작한 차례.
+    const groups: { label: string; kind?: string; targets: string[]; count: number }[] = []
+    for (const c of visible) {
+      const same = c.kind && c.target ? groups.find(g => g.kind === c.kind) : undefined
+      if (same && c.target) {
+        if (!same.targets.includes(c.target)) same.targets.push(c.target)
+        same.count += 1
+      } else groups.push({ label: c.label, kind: c.kind, targets: c.target ? [c.target] : [], count: 1 })
+    }
     // 패널이 길어지지 않게 다섯 줄까지만 보이고 나머지는 개수로 적는다.
-    for (const c of visible.slice(0, MAX_CALLS)) {
-      const name = cut(c.label, cols - 2)
+    for (const g of groups.slice(0, MAX_CALLS)) {
+      const name = g.kind ? groupText(g.kind, g.targets, cols - 2) : cut(g.label, cols - 2)
       callLines.push(
         <Text>
           <Text color="suggestion">-</Text>
@@ -834,7 +870,8 @@ export const register: Register = on => {
         </Text>,
       )
     }
-    if (visible.length > MAX_CALLS) callLines.push(<Text dimColor>{`외 ${visible.length - MAX_CALLS}개`}</Text>)
+    const hidden = groups.slice(MAX_CALLS).reduce((n, g) => n + g.count, 0)
+    if (hidden > 0) callLines.push(<Text dimColor>{`외 ${hidden}개`}</Text>)
 
     // 머리, 단계 묶음마다 아래에 빈 줄 하나. 묶음 안의 아래 단계는 붙여 둔다.
     const body: RenderChildren[] = []

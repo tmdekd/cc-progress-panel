@@ -962,7 +962,7 @@ test('tools show plain names: MCP by its tool name, web and skill tools in words
 
   const ui = await $.ui.mount(pane('terminal'))
   const lines = (await ui.findAll({ type: 'Text', text: /^- / })).map(l => l.text)
-  expect(lines).toEqual(['- work_state_write', '- 웹 검색', '- 웹 페이지 읽기', '- 스킬: plugin-authoring'])
+  expect(lines).toEqual(['- work_state_write', '- 웹 검색: 빵집', '- 웹 페이지: example.com', '- 스킬: plugin-authoring'])
   await ui.unmount()
   await w.clock.advance(5 * SEC)
   await Promise.all(calls)
@@ -982,6 +982,86 @@ test('the running part shows at most five calls and counts the rest', async ($, 
   expect(await ui.findAll({ type: 'Text', text: /^- / })).toHaveLength(5)
   expect(await ui.find({ type: 'Text', text: /작업6/ })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /^외 2개$/ }))?.props.dimColor).toBe(true)
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+// ── 2026-11-24 손질: "- Read"만 보여서는 무엇을 보는지 알 수 없다 ─────────
+// 파일·검색 도구는 "종류: 대상"으로 보인다. 경로는 파일 이름만 남긴다.
+test('file and search tools show what they touch', async ($, on) => {
+  const w = world(on)
+  for (const name of ['Read', 'Edit', 'Write', 'Grep', 'Glob']) slow(on, w, name)
+  await $.session.start(START)
+  const calls = [
+    $.tool.call({ tool: 'Read', file_path: 'C:\\Users\\me\\Proj\\viz\\api\\chat.py' } as unknown as CallInput),
+    $.tool.call({ tool: 'Edit', file_path: 'C:/Users/me/Proj/ai/agent.py', old_string: 'a', new_string: 'b' } as unknown as CallInput),
+    $.tool.call({ tool: 'Write', file_path: '/home/me/notes.md', content: 'x' } as unknown as CallInput),
+    $.tool.call({ tool: 'Grep', pattern: 'SESSION_RE' } as unknown as CallInput),
+    $.tool.call({ tool: 'Glob', pattern: '**/*.py' } as unknown as CallInput),
+  ]
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const lines = (await ui.findAll({ type: 'Text', text: /^- / })).map(l => l.text)
+  expect(lines).toEqual([
+    '- 파일 읽기: chat.py',
+    '- 파일 수정: agent.py',
+    '- 파일 작성: notes.md',
+    '- 코드 검색: "SESSION_RE"',
+    '- 파일 찾기: **/*.py',
+  ])
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+// 같은 종류는 한 줄에 모은다. 줄 순서는 그 종류가 처음 시작한 차례, 이름 순서는 시작한 차례.
+test('calls of one kind share a line, and a narrow pane counts the names that do not fit', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Read')
+  slow(on, w, 'Grep')
+  await $.session.start(START)
+  const read = (f: string) => $.tool.call({ tool: 'Read', file_path: `C:/Users/me/Proj/db/${f}` } as unknown as CallInput)
+  const calls = [
+    read('load.py'),
+    $.tool.call({ tool: 'Grep', pattern: 'x' } as unknown as CallInput),
+    read('chat.py'),
+    read('app.py'),
+    read('runs.py'),
+    read('store.py'),
+  ]
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  let ui = await $.ui.mount(pane('terminal', 80))
+  let lines = (await ui.findAll({ type: 'Text', text: /^- / })).map(l => l.text)
+  expect(lines).toEqual(['- 파일 읽기: load.py, chat.py, app.py, runs.py, store.py', '- 코드 검색: "x"'])
+  await ui.unmount()
+
+  ui = await $.ui.mount(pane('terminal', 40))
+  lines = (await ui.findAll({ type: 'Text', text: /^- / })).map(l => l.text)
+  expect(lines).toEqual(['- 파일 읽기: load.py, chat.py 외 3개', '- 코드 검색: "x"'])
+  expect(await ui.find({ type: 'Text', text: /^외 \d+개$/ })).toBeUndefined()
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('a file read twice at once is named once', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Read')
+  await $.session.start(START)
+  const calls = [1, 2].map(() =>
+    $.tool.call({ tool: 'Read', file_path: 'C:/Users/me/Proj/db/load.py' } as unknown as CallInput),
+  )
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const lines = (await ui.findAll({ type: 'Text', text: /^- / })).map(l => l.text)
+  expect(lines).toEqual(['- 파일 읽기: load.py'])
   await ui.unmount()
   await w.clock.advance(5 * SEC)
   await Promise.all(calls)
