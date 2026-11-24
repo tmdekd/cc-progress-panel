@@ -14,8 +14,10 @@ const BEAT_MS = 60_000
 const KEEP = 30
 // 1초보다 짧은 호출은 패널에 띄우지 않는다(깜빡임 방지).
 const SHOW_AFTER_MS = 1000
-// 실행 중 칸에 보이는 호출 줄 수.
+// 돌고 있는 명령을 한 자리(진행 중 단계 아래, 목록 맨 아래)에 보이는 줄 수.
 const MAX_CALLS = 5
+// 머리 막대가 이보다 짧아지면 걸린 시간을 뺀다.
+const MIN_BAR = 4
 // 백그라운드 명령은 끝 알림을 놓쳐도 이 시간이 지나면 지운다.
 const BACKGROUND_TTL_MS = 12 * 60 * 60_000
 // 입력창 위 알림이 보이는 시간과 한 번에 쌓아 두는 줄 수.
@@ -217,46 +219,98 @@ function totalTime(ls: Step[], t: number): string {
 
 // 짧게 보기(사용자가 정함, 2026-11-19): 진행 중·막힘은 늘 모두, 끝난 것은 가장 최근에 끝난 1개,
 // 예정은 앞에서 3개까지. 패널 높이에 안 들어가면 FITS 의 다음 모양으로 줄여 스크롤이 생기지 않게 한다.
-type Fit = { todo: number; recent: boolean; gaps: boolean }
+// 끝 단계(2026-11-24): 마지막 단계가 예정이면 일이 어디서 끝나는지 보이게 늘 그린다(end). 거의 마지막 모양에서만 뺀다.
+type Fit = { todo: number; recent: boolean; gaps: boolean; end: boolean }
 const FITS: readonly Fit[] = [
-  { todo: 3, recent: true, gaps: true },
-  { todo: 2, recent: true, gaps: true },
-  { todo: 1, recent: true, gaps: true },
-  { todo: 1, recent: false, gaps: true },
-  { todo: 0, recent: false, gaps: true },
-  { todo: 0, recent: false, gaps: false },
+  { todo: 3, recent: true, gaps: true, end: true },
+  { todo: 2, recent: true, gaps: true, end: true },
+  { todo: 1, recent: true, gaps: true, end: true },
+  { todo: 1, recent: false, gaps: true, end: true },
+  { todo: 0, recent: false, gaps: true, end: true },
+  { todo: 0, recent: false, gaps: true, end: false },
+  { todo: 0, recent: false, gaps: false, end: false },
 ]
 // 패널 머리: 제목 1줄 + 막대와 숫자 1줄 + 빈 줄 1줄.
 const HEAD_ROWS = 3
 
-function compact(ls: Step[], fit: Fit): { ids: Set<string>; moreDone: number; moreTodo: number } {
+function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreDone: number; moreTodo: number } {
   const ids = new Set(ls.filter(s => s.status === 'doing' || s.status === 'blocked').map(s => s.id))
   const fin = ls.filter(s => isFinal(s.status))
   const todo = ls.filter(s => s.status === 'todo')
   // 가장 늦게 끝난 것. 끝난 시각이 같으면 순서상 뒤의 것.
   const last = fin.reduce<Step | undefined>((a, s) => (a && (a.endedAt ?? -1) > (s.endedAt ?? -1) ? a : s), undefined)
-  const keep = fit.recent && last ? last : undefined
-  if (keep) ids.add(keep.id)
+  if (fit.recent && last) ids.add(last.id)
   for (const s of todo.slice(0, fit.todo)) ids.add(s.id)
-  return { ids, moreDone: fin.length - (keep ? 1 : 0), moreTodo: Math.max(0, todo.length - fit.todo) }
+  const end = ls.at(-1)
+  if (fit.end && end?.status === 'todo') ids.add(end.id)
+  // 숨는 것이 딱 1개이고 맨 위 단계이며 메모가 없으면 "1개 더" 대신 그 단계를 그린다. 줄 수가 같다.
+  const top = new Set(steps.map(s => s.id))
+  for (const group of [fin, todo]) {
+    const hidden = group.filter(s => !ids.has(s.id))
+    if (hidden.length === 1 && top.has(hidden[0]!.id) && !hidden[0]!.note) ids.add(hidden[0]!.id)
+  }
+  return {
+    ids,
+    moreDone: fin.filter(s => !ids.has(s.id)).length,
+    moreTodo: todo.filter(s => !ids.has(s.id)).length,
+  }
 }
 
-// 화면 폭: 한글·전각은 2칸.
-const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/
+// 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자(U+FE0F 모양 고르기, U+200D 잇기)는 0칸.
+const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|\p{Emoji_Presentation}/u
+
+function width(ch: string): number {
+  const c = ch.codePointAt(0) ?? 0
+  if (c === 0xfe0f || c === 0x200d) return 0
+  return WIDE.test(ch) ? 2 : 1
+}
 
 function cells(text: string): number {
   let n = 0
-  for (const ch of text) n += WIDE.test(ch) ? 2 : 1
+  for (const ch of text) n += width(ch)
   return n
 }
 
+// 번호 글자(원문자 ①, 괄호 숫자 ⑴, 원 영문자 Ⓐ, 로마 숫자 Ⅳ 등)는 폭이 모호하다. 터미널은 1칸을 주는데
+// 글꼴이 2칸으로 그려 다음 글자를 덮는다. 보통 글자로 바꾸고, 붙은 번호끼리는 쉼표로 나눈다(④⑤ → 4,5).
+// 한글 호환 자모(ㅋ)가 바뀌지 않게 글 전체가 아니라 번호 글자만 NFKC로 바꾼다.
+function numeral(c: number): string | undefined {
+  if (c >= 0x2776 && c <= 0x2793) return String(((c - 0x2776) % 10) + 1) // ❶–❿, ➀–➉, ➊–➓
+  if (c >= 0x24eb && c <= 0x24f4) return String(c - 0x24eb + 11) // ⓫–⓴
+  if (c >= 0x24f5 && c <= 0x24fe) return String(c - 0x24f5 + 1) // ⓵–⓾
+  if (c === 0x24ff) return '0' // ⓿
+  if ((c >= 0x2460 && c <= 0x24ff) || (c >= 0x2160 && c <= 0x2188)) {
+    const s = String.fromCodePoint(c).normalize('NFKC')
+    return s === String.fromCodePoint(c) ? undefined : s
+  }
+  return undefined
+}
+
+function plain(text: string): string {
+  let out = ''
+  let after = false
+  for (const ch of text) {
+    const n = numeral(ch.codePointAt(0) ?? 0)
+    if (n === undefined) {
+      out += ch
+      after = false
+      continue
+    }
+    if (after && /[0-9A-Za-z]$/.test(out) && /^[0-9A-Za-z]/.test(n)) out += ','
+    out += n
+    after = true
+  }
+  return out
+}
+
 function cut(text: string, room: number): string {
+  text = plain(text)
   if (cells(text) <= room) return text
   if (room <= 1) return room === 1 ? '…' : ''
   let out = ''
   let used = 0
   for (const ch of text) {
-    const w = WIDE.test(ch) ? 2 : 1
+    const w = width(ch)
     if (used + w > room - 1) break
     out += ch
     used += w
@@ -307,68 +361,72 @@ function shortCommand(command: string): string {
   return s.trim()
 }
 
-// 실행 중 칸 한 줄의 글. 파일·검색 도구는 종류와 대상을 따로 두어 같은 종류를 한 줄로 묶는다.
+// 돌고 있는 명령 한 줄의 글. 종류(흐리게)와 대상을 따로 두어 좁으면 대상만 줄인다.
 type Label = { label: string; kind?: string; target?: string }
+
+// 파일 종류: 좁으면 폴더부터 뺀다.
+const FILE_KINDS = new Set(['읽기', '수정', '작성'])
 
 function labelOf(e: { tool: string }): Label {
   const args = e as unknown as Record<string, unknown>
   const str = (v: unknown) => (typeof v === 'string' ? v : '')
-  // "- Read"만으로는 무엇을 보는지 모른다. 종류와 대상(파일 이름, 찾는 말, 주소)을 함께 보인다.
-  const of = (kind: string, target: string): Label => (target ? { label: `${kind}: ${target}`, kind, target } : { label: kind })
-  const file = (key: string) => str(args[key]).split(/[\\/]+/).filter(Boolean).pop() ?? ''
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+  // "- Read"만으로는 무엇을 보는지 모른다. 종류와 대상(폴더/파일, 찾는 말과 범위, 주소)을 함께 보인다.
+  const of = (kind: string, target: string): Label => (target ? { label: `${kind} ${target}`, kind, target } : { label: kind })
+  const parts = (key: string) => str(args[key]).split(/[\\/]+/).filter(Boolean)
+  // 경로는 마지막 두 마디(폴더/파일)만. 같은 이름의 파일이 여러 폴더에 있어도 구분된다.
+  const file = (key: string) => parts(key).slice(-2).join('/')
+  const where = (s: string) => (s ? ` · ${s}` : '')
   // 명령은 Claude가 붙인 짧은 설명을 쓴다. 명령 첫 줄은 경로 때문에 잘려 무엇을 하는지 안 보인다.
   if (e.tool === 'Bash' || e.tool === 'PowerShell') {
     return { label: firstLine(str(args.description)) || shortCommand(str(args.command)) || e.tool }
   }
-  if (e.tool === 'Agent') return { label: `에이전트: ${firstLine(str(args.description)) || '작업'}` }
-  if (e.tool === 'Monitor') return { label: `모니터: ${firstLine(str(args.description)) || '감시'}` }
-  if (e.tool === 'Read') return of('파일 읽기', file('file_path'))
-  if (e.tool === 'Edit') return of('파일 수정', file('file_path'))
-  if (e.tool === 'Write') return of('파일 작성', file('file_path'))
-  if (e.tool === 'NotebookEdit') return of('파일 수정', file('notebook_path'))
-  if (e.tool === 'Grep') return of('코드 검색', str(args.pattern) && `"${firstLine(str(args.pattern))}"`)
-  if (e.tool === 'Glob') return of('파일 찾기', firstLine(str(args.pattern)))
-  if (e.tool === 'WebSearch') return of('웹 검색', firstLine(str(args.query)))
+  if (e.tool === 'Agent') return of('에이전트', firstLine(str(args.description)) || '작업')
+  if (e.tool === 'Monitor') return of('모니터', firstLine(str(args.description)) || '감시')
+  if (e.tool === 'Read') {
+    // 줄 범위: offset이 있으면 ":시작", limit도 있으면 ":시작-끝".
+    const from = num(args.offset)
+    const n = num(args.limit)
+    const lines = from === undefined ? '' : n ? `:${from}-${from + n - 1}` : `:${from}`
+    return of('읽기', file('file_path') && file('file_path') + lines)
+  }
+  if (e.tool === 'Edit') return of('수정', file('file_path'))
+  if (e.tool === 'Write') return of('작성', file('file_path'))
+  if (e.tool === 'NotebookEdit') return of('수정', file('notebook_path'))
+  if (e.tool === 'Grep') {
+    // 범위: 경로가 있으면 그 끝 이름, 없으면 glob, 그것도 없으면 type.
+    const pattern = firstLine(str(args.pattern))
+    const scope = parts('path').at(-1) ?? (firstLine(str(args.glob)) || firstLine(str(args.type)))
+    return of('검색', pattern && `"${pattern}"${where(scope)}`)
+  }
+  if (e.tool === 'Glob') {
+    const pattern = firstLine(str(args.pattern))
+    return of('찾기', pattern && `${pattern}${where(parts('path').at(-1) ?? '')}`)
+  }
+  if (e.tool === 'WebSearch') return of('웹 검색', str(args.query) && `"${firstLine(str(args.query))}"`)
   if (e.tool === 'WebFetch') return of('웹 페이지', /^[a-z]+:\/\/([^/?#]+)/i.exec(str(args.url))?.[1] ?? '')
-  if (e.tool === 'Skill') return { label: str(args.skill) ? `스킬: ${str(args.skill)}` : e.tool }
+  if (e.tool === 'Skill') return str(args.skill) ? of('스킬', str(args.skill)) : { label: e.tool }
   // MCP 도구는 서버 이름이 길어 잘리므로 도구 이름만 보인다.
   const mcp = /^mcp__(.+?)__(.+)$/.exec(e.tool)
   if (mcp) return { label: mcp[2] ?? e.tool }
   return { label: e.tool }
 }
 
-// 같은 종류의 대상들: 폭에 들어가는 만큼 이름을 적고 나머지는 "외 N개".
-function fitNames(targets: string[], room: number): string {
-  for (let k = targets.length; k >= 1; k--) {
-    const more = targets.length - k
-    const tail = more ? ` 외 ${more}개` : ''
-    const names = targets.slice(0, k).join(', ')
-    // 하나도 들어가지 않으면 첫 이름을 잘라서라도 남긴다.
-    if (k === 1 || cells(names + tail) <= room) return cut(cut(names, Math.max(1, room - cells(tail))) + tail, room)
-  }
-  return ''
-}
-
-type CallGroup = { label: string; kind?: string; targets: string[]; count: number }
-
-// 같은 종류(파일 읽기 등)는 한 묶음으로. 순서는 그 종류가 처음 시작한 차례.
-function groupCalls(visible: Running[]): CallGroup[] {
-  const groups: CallGroup[] = []
-  for (const c of visible) {
-    const same = c.kind && c.target ? groups.find(g => g.kind === c.kind) : undefined
-    if (same && c.target) {
-      if (!same.targets.includes(c.target)) same.targets.push(c.target)
-      same.count += 1
-    } else groups.push({ label: c.label, kind: c.kind, targets: c.target ? [c.target] : [], count: 1 })
-  }
-  return groups
+// 좁을 때 대상 줄이기: 파일은 폴더, 줄 범위 차례로 빼고, 그래도 넘치면 끝을 자른다.
+function fitTarget(kind: string, target: string, room: number): string {
+  if (!FILE_KINDS.has(kind)) return cut(target, room)
+  const name = target.replace(/^.*\//, '')
+  const bare = name.replace(/:\d+(?:-\d+)?$/, '')
+  return cut([target, name].find(t => cells(plain(t)) <= room) ?? bare, room)
 }
 
 // 돌고 있는 명령을 붙일 단계: 진행 중인 아래 단계 가운데 가장 나중에 시작한 것. 없으면 맨 아래에 둔다.
+// 막혔다가 다시 진행 중이 된 단계는 그때 시작한 것으로 본다(사용자가 정함, 2026-11-24).
 function callsAt(ls: Step[]): string | undefined {
+  const since = (s: Step) => s.doingSince ?? s.startedAt ?? 0
   let at: Step | undefined
   for (const s of ls) {
-    if (s.status === 'doing' && (!at || (s.startedAt ?? 0) > (at.startedAt ?? 0))) at = s
+    if (s.status === 'doing' && (!at || since(s) > since(at))) at = s
   }
   return at?.id
 }
@@ -442,8 +500,10 @@ function buildSteps(input: StepInput[], old: Board | null, t: number): Step[] {
       if (prev.startedAt !== undefined) step.startedAt = prev.startedAt
       if (prev.endedAt !== undefined && status !== 'doing') step.endedAt = prev.endedAt
       if (prev.note) step.note = prev.note
+      if (prev.doingSince !== undefined && status === 'doing') step.doingSince = prev.doingSince
     }
     if (status === 'doing' && step.startedAt === undefined) step.startedAt = t
+    if (status === 'doing' && prev?.status !== 'doing') step.doingSince = t
     if (s.children) step.children = buildSteps(s.children, old, t)
     return step
   })
@@ -715,6 +775,7 @@ export const register: Register = on => {
 
       if (status === 'doing') {
         step.startedAt ??= w
+        if (step.status !== 'doing') step.doingSince = w
         delete step.endedAt
       } else if (status === 'todo') {
         delete step.startedAt
@@ -830,18 +891,21 @@ export const register: Register = on => {
     const w = workTime(b, t)
     const cols = Math.max(16, e.props.bodyColumns)
 
-    // 단계 아래에 붙는 줄의 앞부분: 묶음 안이면 세로선, 그리고 점선. 글자는 단계 이름과 같은 칸에서 시작한다.
-    type Lead = { rail?: Color; dot: Color }
+    // 단계 아래에 붙는 줄의 앞부분: 묶음 안이면 세로선(마지막 가지 └─ 아래는 빈칸, rail: null), 그리고 점선.
+    // 글자는 단계 이름과 같은 칸에서 시작한다.
+    type Lead = { rail?: Color | null; dot: Color }
     const leadOf = (l: Lead): RenderChildren[] => [
-      ...(l.rail ? [<Text color={l.rail}>│</Text>, ' '] : []),
+      ...(l.rail ? [<Text color={l.rail}>│</Text>, ' '] : l.rail === null ? ['  '] : []),
       <Text color={l.dot}>┆</Text>,
       ' ',
     ]
-    const leadCells = (l: Lead) => (l.rail ? 4 : 2)
+    const leadCells = (l: Lead) => (l.rail === undefined ? 2 : 4)
 
-    // 한 줄: [세로선] 표시(상태 색) + 이름(상태별 강조) + 오른쪽 끝 시간.
-    const row = (st: Shown, label: string, isGroup: boolean, rail?: Color) => {
-      const head = rail ? 4 : 2
+    // 한 줄: [가지] 표시(상태 색) + 이름(상태별 강조) + 오른쪽 끝 시간.
+    // 묶음 안 단계는 진행선에서 가지를 친다(├─, 목록 맨 끝 묶음의 마지막 단계는 └─).
+    type Branch = { color: Color; last: boolean }
+    const row = (st: Shown, label: string, isGroup: boolean, branch?: Branch) => {
+      const head = branch ? 4 : 2
       const right = timeText(st, w)
       const room = cols - head - (right ? cells(right) + 1 : 0)
       const name = cut(label, room)
@@ -851,8 +915,7 @@ export const register: Register = on => {
       const ts = TIME[st.status]
       return (
         <Text>
-          {rail ? <Text color={rail}>│</Text> : ''}
-          {rail ? ' ' : ''}
+          {branch ? <Text color={branch.color}>{branch.last ? '└─' : '├─'}</Text> : ''}
           <Text color={COLOR[st.status]}>{MARK[st.status]}</Text>
           {' '}
           <Text color={ls.color} bold={ls.bold} dimColor={ls.dimColor} strikethrough={ls.strikethrough}>
@@ -870,21 +933,20 @@ export const register: Register = on => {
       )
     }
 
-    // 명령 줄들: 다섯 줄까지, 넘으면 "외 n개". 종류("파일 읽기:")는 흐리게, 대상은 보통.
-    const callLines = (l: Lead, groups: CallGroup[]): RenderChildren[] => {
-      const room = cols - leadCells(l)
-      const out: RenderChildren[] = groups.slice(0, MAX_CALLS).map(g => {
-        if (!g.kind) return <Text>{leadOf(l)}{cut(g.label, room)}</Text>
-        const kind = `${g.kind}:`
-        return (
-          <Text>
-            {leadOf(l)}
-            <Text dimColor>{kind}</Text>
-            {` ${fitNames(g.targets, room - cells(kind) - 1)}`}
-          </Text>
-        )
-      })
-      const hidden = groups.slice(MAX_CALLS).reduce((n, g) => n + g.count, 0)
+    // 명령 줄(사용자가 고름, 2026-11-24): 한 호출에 한 줄 "▶ 종류 대상". ▶는 앞 점선과 같은 색, 종류는 흐리게.
+    // 다섯 줄까지, 넘으면 "외 n개".
+    const callLines = (l: Lead, list: Running[]): RenderChildren[] => {
+      const room = cols - leadCells(l) - 2
+      const out: RenderChildren[] = list.slice(0, MAX_CALLS).map(c => (
+        <Text>
+          {leadOf(l)}
+          <Text color={l.dot}>▶</Text>
+          {' '}
+          {c.kind && c.target ? <Text dimColor>{c.kind}</Text> : ''}
+          {c.kind && c.target ? ` ${fitTarget(c.kind, c.target, room - cells(c.kind) - 1)}` : cut(c.label, room)}
+        </Text>
+      ))
+      const hidden = list.length - MAX_CALLS
       if (hidden > 0) {
         out.push(
           <Text>
@@ -897,8 +959,14 @@ export const register: Register = on => {
     }
 
     // 돌고 있는 명령: 진행 중 단계 아래에. 그런 단계가 없으면 맨 아래에.
-    const groups = groupCalls(calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS))
+    // 같은 글(같은 파일을 두 번 읽는 등)은 한 줄로.
+    const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
+    const once = (list: Running[]) => list.filter((c, i) => list.findIndex(d => d.label === c.label) === i)
     const at = b ? callsAt(leaves(b.steps)) : undefined
+    // 백그라운드 명령은 늘 목록 맨 아래에(사용자가 정함, 2026-11-24). 진행 중 단계 아래에는 그 밖의 명령만.
+    // 같은 글은 자리마다 따로 합친다(같은 설명의 백그라운드 명령이 있어도 지금 도는 명령은 단계 아래에 보인다).
+    const hung = once(at ? visible.filter(c => !c.isBackground) : [])
+    const below = once(at ? visible.filter(c => c.isBackground) : visible)
 
     // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게), 이어서 그 단계에서 돌고 있는 명령.
     const hang = (l: Lead, step: Step): RenderChildren[] => {
@@ -912,7 +980,7 @@ export const register: Register = on => {
           </Text>,
         )
       }
-      if (step.id === at) out.push(...callLines(l, groups))
+      if (step.id === at) out.push(...callLines(l, hung))
       return out
     }
 
@@ -925,7 +993,7 @@ export const register: Register = on => {
       </Text>
     )
 
-    const bottom = groups.length && !at ? callLines({ dot: 'subtle' }, groups) : []
+    const bottom = callLines({ dot: 'subtle' }, below)
 
     const body: RenderChildren[] = []
     if (!b) {
@@ -938,11 +1006,15 @@ export const register: Register = on => {
       const ls = leaves(b.steps)
       const done = ls.filter(s => isFinal(s.status)).length
       // 머리 둘째 줄: 가는 막대(끝난 몫 초록) + 완료 수/전체(굵게) + 전체 걸린 시간(흐리게).
+      // 폭이 모자라 막대가 MIN_BAR칸보다 짧아지면 시간을 뺀다.
       const count = `${done}/${ls.length}`
       const took = totalTime(ls, w)
-      const tail = took ? ` · ${took}` : ''
-      const barW = Math.max(0, cols - cells(count) - cells(tail) - 1)
-      const fill = ls.length ? Math.round((barW * done) / ls.length) : 0
+      const room = (t: string) => cols - cells(count) - cells(t) - 1
+      const tail = took && room(` · ${took}`) >= MIN_BAR ? ` · ${took}` : ''
+      const barW = Math.max(0, room(tail))
+      // 막대는 다 끝났을 때만 꽉 차고, 하나라도 끝났으면 한 칸은 채운다.
+      const part = Math.min(barW - 1, Math.max(done ? 1 : 0, Math.round((barW * done) / ls.length)))
+      const fill = !ls.length ? 0 : done === ls.length ? barW : Math.max(0, part)
       body.push(
         <Box key="head" flexDirection="column" marginBottom={1}>
           <Text bold>{cut(b.title, cols)}</Text>
@@ -958,7 +1030,7 @@ export const register: Register = on => {
 
       // 한 모양(fit)으로 놓을 것과 그 줄 수. 그릴 줄로 세므로 셈과 그림이 어긋나지 않는다.
       const layout = (fit: Fit) => {
-        const { ids, moreDone, moreTodo } = compact(ls, fit)
+        const { ids, moreDone, moreTodo } = compact(ls, fit, b.steps)
         // 놓을 것: 숨긴 끝남, 보이는 단계 묶음들, 숨긴 예정. 이 차례로 세로선 색을 정한다.
         const order: { id: string; status: StepStatus; step?: Step; kids: Step[] }[] = []
         if (moreDone) order.push({ id: 'more-done', status: 'done', kids: [] })
@@ -969,7 +1041,15 @@ export const register: Register = on => {
           if (kids.length ? seen.length === 0 : !ids.has(s.id)) continue
           order.push({ id: `step-${s.id}`, status: shown(s).status, step: s, kids: seen })
         }
-        if (moreTodo) order.push({ id: 'more-todo', status: 'todo', kids: [] })
+        // 숨긴 예정은 끝 단계가 보이면 그 앞(숨긴 것은 모두 끝 단계보다 앞에 있다), 아니면 맨 끝에.
+        // 끝 단계가 묶음 안이고 그 묶음에 보이는 단계가 더 있으면, 묶음 위가 아니라 묶음 안의 끝 단계 줄 앞에 적는다
+        // (묶음 위에 두면 진행 중인 묶음보다 예정 줄이 먼저 나오고 세로선 색이 어긋난다. 2026-11-25 검토).
+        const end = ls.at(-1)
+        const endShown = !!end && ids.has(end.id)
+        const inGroup = moreTodo > 0 && endShown && (order.at(-1)?.kids.length ?? 0) > 1
+        if (moreTodo && !inGroup) {
+          order.splice(endShown ? order.length - 1 : order.length, 0, { id: 'more-todo', status: 'todo', kids: [] })
+        }
         // 세로선(사용자가 고름, 2026-11-24): 지나온 곳 초록, 지금 묶음은 그 상태 색, 남은 곳 회색.
         // 지금 묶음 = 처음 끝나지 않은 것.
         const open = order.findIndex(o => !isFinal(o.status))
@@ -985,10 +1065,19 @@ export const register: Register = on => {
             const s = o.step
             lines.push(row(shown(s), s.label, o.kids.length > 0))
             if (!o.kids.length) lines.push(...hang({ dot: COLOR[s.status] }, s))
-            for (const c of o.kids) {
-              lines.push(row(c, c.label, false, railIn(i)))
-              lines.push(...hang({ rail: railIn(i), dot: COLOR[c.status] }, c))
-            }
+            o.kids.forEach((c, k) => {
+              const last = i === order.length - 1 && k === o.kids.length - 1
+              if (last && inGroup) {
+                lines.push(
+                  <Text>
+                    {leadOf({ rail: railIn(i), dot: 'subtle' })}
+                    <Text dimColor>{`예정 ${moreTodo}개 더`}</Text>
+                  </Text>,
+                )
+              }
+              lines.push(row(c, c.label, false, { color: railIn(i), last }))
+              lines.push(...hang({ rail: last ? null : railIn(i), dot: COLOR[c.status] }, c))
+            })
           }
           // 맨 위 묶음 사이의 빈 줄 대신 세로선 한 줄.
           if (fit.gaps && i < order.length - 1) lines.push(<Text color={railAfter(i)}>│</Text>)
