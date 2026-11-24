@@ -1,0 +1,277 @@
+# 진행 패널 진행선 모양 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 패널 머리를 한 줄 막대로 줄이고, 단계 목록을 왼쪽 세로선(진행선)으로 잇고, 돌고 있는 명령을 진행 중 단계 아래에 붙인다.
+
+**Architecture:** 바뀌는 곳은 `hooks/register.tsx`의 `ui.render` Pane 훅과 그 도우미뿐이다. 상태(`$.state`·`$.store`) 모양과 도구·알림·시간 규칙은 그대로 둔다. 높이 맞추기(FITS)는 지금처럼 "그릴 줄을 세어 들어가는 첫 모양"을 쓰되, 세로선 줄과 붙는 줄을 센다.
+
+**Tech Stack:** Claude Code mod(hooks module, TSX), `claude-code/testing`
+
+**Spec:** `docs/superpowers/specs/2026-11-24-panel-rail-design.md`
+
+## 실행 환경
+
+- 작업 폴더: `C:\Users\MOONSEUNGGI\Desktop\workspace\github\cc-progress-panel`, 브랜치 `feature/panel-rail`(develop에서 땀)
+- 빠른 테스트: `claude plugin test .` (지금 69개, 저장소 폴더에서 첫 실행 약 4분)
+- 검증: `claude plugin validate .` (아이콘 없음 경고 1건은 원래 있음)
+- 느린 테스트·LLM 테스트: 없음
+- 서버·컨테이너: 없음
+- 화면 확인: `hooks/register.tsx`, `types/index.d.ts`, `README.md`, `tests/progress.test.tsx`를 설치본 `C:\Users\MOONSEUNGGI\.claude\mods\progress-panel\`에 복사하면 다음 턴부터 패널에 반영
+- git: PowerShell에서 `git --no-pager …`. Bash에서 `git fetch`는 멈춤(자격 증명 창). push는 사용자가 지시할 때만
+
+## Global Constraints
+
+- 한 줄은 `e.props.bodyColumns`(최소 16)를 넘지 않는다. 한글·전각은 2칸(`cells`).
+- 색은 테마 이름만: 끝남 `success`, 진행 중 `claude`, 막힘 `warning`, 예정·건너뜀·지나지 않은 선 `subtle`. 흐리게는 `dimColor`.
+- 표시 글자: 끝남 `●`, 진행 중 `◉`, 예정 `○`, 막힘 `▲`, 건너뜀 `–`. 세로선 `│`, 붙는 줄 `┆`, 막대 `━`(끝난 몫)·`─`(나머지).
+- 짧게 보기 규칙(FITS), 시간 규칙(일한 시간, `방금 시작`, 끝나면 `째` 빠짐), 입력창 위 알림 상자는 바꾸지 않는다.
+- 문구는 명사로 끝나는 개조식(`완료 3개 더`, `예정 2개 더`, `외 2개`).
+- 스타일 테스트는 터미널·데스크톱(`SURFACES`) 둘 다.
+
+## Review Focus
+
+1. 진행 중 단계가 둘 이상일 때: 명령은 가장 최근에 시작한 단계 아래에만 붙는다. → Task 2
+2. 붙는 명령 줄 때문에 패널 높이를 넘기면: 예정을 줄여 스크롤이 생기지 않는다(붙는 줄도 센다). → Task 2
+3. 아주 좁은 패널(24칸): 묶음 안 붙는 줄(`│ ┆ 종류: 대상`)도 24칸을 넘지 않는다. → Task 2
+4. 진행 중 단계에 메모와 명령이 함께 있을 때: 메모가 먼저, 명령이 다음 줄. → Task 2
+5. 목록이 없을 때 명령: 빈 안내 아래 `┆ …`로 붙고 사이 빈 줄은 하나뿐. → Task 1
+
+---
+
+### Task 1: 한 줄 막대, 진행선, 메모, 맨 아래 명령
+
+**예상 시간:** 60분 · **선행 Task:** 없음 · **승인 지점:** 없음 · **상태:** 대기
+
+**Files:**
+- Modify: `hooks/register.tsx` (MARK·LABEL 표, `HEAD_ROWS`, `labelOf` 그대로, `groupText`, Pane 훅 전체)
+- Test: `tests/progress.test.tsx`
+
+**Interfaces:**
+- Produces (Task 2가 씀):
+  - `const MARK: Record<StepStatus, string> = { todo: '○', doing: '◉', done: '●', blocked: '▲', skipped: '–' }`
+  - `HEAD_ROWS = 3`
+  - `fitNames(targets: string[], room: number): string` — 지금 `groupText`의 이름 맞추기 부분(종류 없이 이름과 `외 n개`만). `groupText`는 지운다.
+  - `type CallGroup = { label: string; kind?: string; targets: string[]; count: number }`, `groupCalls(visible: Running[]): CallGroup[]` — 지금 Pane 훅 안의 묶기 코드를 함수로.
+  - Pane 훅 안 `hang(prefix: RenderChildren, step: Step): RenderChildren[]` — 한 단계 아래에 붙는 줄들. Task 1에서는 메모 한 줄만 돌려준다.
+  - Pane 훅 안 `callLines(prefix: RenderChildren, groups: CallGroup[], room: number): RenderChildren[]` — 명령 줄들(5줄까지, 넘으면 `외 n개` 줄).
+- 줄 모양(Text 한 줄의 글자):
+  - 머리 2줄: `━…━─…─ 0/4 · 방금 시작` (막대 폭 = `cols - cells(오른쪽) - 1`, 오른쪽 = `${done}/${total}` 굵게 + ` · ${took}` 흐리게, took 없으면 숫자만)
+  - 맨 위 단계: `◉ 사진 모으기 … 17분째`, 묶음 안: `│ ○ 메뉴 화면`
+  - 세로선 줄: `│` 하나만 있는 Text
+  - 숨긴 것: `┆ 완료 n개 더`, `┆ 예정 n개 더` (안쪽 글자 Text는 흐리게)
+  - 메모: 맨 위 단계면 `┆ 이유`, 묶음 안이면 `│ ┆ 이유` (이유 Text는 막힘이면 warning, 아니면 흐리게)
+  - 명령(맨 아래): `┆ 종류: 대상` 또는 `┆ 설명` (┆ subtle, `종류:`는 흐리게)
+- Box 키: 머리 `head`(marginBottom 1), 묶음 `step-${id}`(marginBottom 0, 세로선 줄은 묶음 Box의 마지막 줄), 숨긴 끝남 `more-done`, 숨긴 예정 `more-todo`, 맨 아래 명령 `calls`(목록이 있으면 marginTop 1, 없으면 없음). 명령이 없으면 `calls` Box도, 구분선도, `실행 중인 작업 없음`도 없다.
+
+세로선 색(spec "세로선"): 위에서부터 놓인 차례(숨긴 끝남 → 묶음들 → 숨긴 예정)로 `open` = 처음 끝나지 않은 묶음(숨긴 예정은 끝나지 않음으로 센다).
+
+```ts
+// i: 놓인 차례. 숨긴 끝남은 끝남, 숨긴 예정은 예정으로 친다.
+const railIn = (i: number) =>
+  open < 0 || i < open ? 'success' : i === open && isNow(st(open)) ? COLOR[st(open)] : 'subtle'
+const railAfter = (i: number) =>
+  open < 0 || i + 1 < open || (i + 1 === open && isNow(st(open))) ? 'success' : 'subtle'
+```
+
+- [ ] **Step 1: 새 모양을 기대하는 테스트로 고치고 더하기**
+
+고칠 기대값(앞 → 뒤):
+- 표시 글자: `▶`→`◉`, `✓ 사진/목차/자료/화면`→`● …`, `· 메뉴/화면/그림/공개`→`○ …`(묶음 안은 `│ ○ …`), `⚠ 공개하기`→`▲ 공개하기`, `^✓$`→`^●$`
+- 머리: `/^0\/4 완료 · 방금 시작\s*$/`→`/^─+ 0\/4 · 방금 시작$/`, `/2\/4 완료/`→`/ 2\/4( · |$)/`, `/^0\/4 완료\s*$/`→`/^─+ 0\/4$/`, `/^0\/4 완료 · 1시간 12분째\s*$/`→`/ 0\/4 · 1시간 12분째$/`, `/^4\/4 완료 · 2시간 5분\s*$/`→`/^━+ 4\/4 · 2시간 5분$/`, `/^2\/8 완료 · 2분째\s*$/`→`/ 2\/8 · 2분째$/`
+- 숨긴 것: `/^✓ 완료 n개 더$/`→`/^┆ 완료 n개 더$/`, `/^· 예정 n개 더$/`→`/^┆ 예정 n개 더$/`, dimColor 확인은 안쪽 `/^완료 n개 더$/`·`/^예정 n개 더$/`
+- 명령(목록 없음): `- `로 시작하던 기대값을 `┆ `로. `'- 파일 읽기: chat.py'`→`'┆ 파일 읽기: chat.py'` 등. `실행 중인 작업 없음`을 기대하던 곳은 `/^┆ /` 줄이 없음으로.
+- `the list mark of a running command is in its own color` → `'a command with no step underway hangs from a grey dotted line'`: `/^┆$/` color `subtle`
+- 막힘 메모: `/도메인 연결 안 됨/`의 색 확인은 안쪽 `/^도메인 연결 안 됨$/`로, 줄 전체는 `/^┆ 도메인 연결 안 됨$/`
+- `top-level steps are set apart by a blank row, and the head too` → `'top-level steps are joined by a rail row, and the head keeps a blank row'`: 새 PLAN(모두 예정)에서 `findAll(/^│$/)` 4개(세로선 줄 2 + 묶음 안 `│` 2), 모두 `subtle`, `head` marginBottom 1, `calls` Box 없음
+- 짧게 보기 줄 수(spec "높이 맞추기", 줄 수 = 3 + 놓인 것 수 + 사이 세로선 수):
+  - `a long list …`: 주석 `머리 3 + 놓인 것 7 + 세로선 6 = 16줄`
+  - `a shorter pane …`: `pane('terminal', 40, 13)` (예정 3개 16줄, 2개 14줄, 1개 12줄)
+  - `a very short pane …`: `pane('terminal', 40, 9)` (진행 중 둘. 예정 0개·완료 빼기 10줄, 세로선까지 빼면 7줄). 기대: `/^┆ 완료 2개 더$/`, `/◉ 초안 작성/`, `/◉ 그림 삽입/`, `/^┆ 예정 4개 더$/`, `findAll(/^│$/)` 0개. `pane(…, 5)`는 그대로.
+
+더할 테스트:
+
+```ts
+test('the head is one thin bar with the count and the time, as wide as the pane', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
+  await w.clock.advance(17 * MIN)
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40))
+    const bar = await ui.find({ type: 'Text', text: /^━+─+ 1\/4 · 17분째$/ })
+    expect(cells(bar?.text ?? '')).toBe(40)
+    expect((await ui.find({ type: 'Text', text: /^1\/4$/ }))?.props.bold).toBe(true)
+    expect((await ui.find({ type: 'Text', text: /^ · 17분째$/ }))?.props.dimColor).toBe(true)
+    expect(await ui.find({ type: 'Progress' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /완료 · / })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('each status has its own mark and color, on terminal and desktop', async ($, on) => {
+  // a 끝남, b1 진행 중, c 막힘 → b2 예정. 건너뜀은 따로.
+  // 기대: ^●$ success, ^◉$ claude(첫 것: 묶음 b의 표시도 claude), ^○$ subtle, ^▲$ warning
+  // 묶음 이름 ^화면$ 은 bold, color 없음
+})
+
+test('the rail is green where the work has passed, in the step color where it is now, and grey ahead', async ($, on) => {
+  // a 끝남, b1 진행 중: findAll(/^│$/) 색 = ['success','claude','claude','subtle']
+  // b1 막힘(메모 없이): ['success','warning','warning','subtle']
+  // 모두 끝남: 모두 'success', /^┆$/ 도 success
+})
+
+test('with no command running there is no running part at all', async ($, on) => {
+  // PLAN, a 진행 중: Box 'calls' 없음, /^─+$/ 없음, /실행 중인 작업 없음/ 없음
+})
+
+test('with no list a running command sits under the empty note, one blank row apart', async ($, on) => {
+  // 목록 없이 Bash 하나: Box 'empty' marginBottom 1, Box 'calls' marginTop 없음, /^┆ pytest/ 있음
+})
+```
+
+- [ ] **Step 2: 테스트를 돌려 새 테스트·고친 테스트가 실패하는지 보기**
+
+Run: `claude plugin test .`
+Expected: 표시 글자·머리·세로선·명령 기대값을 고친 테스트들이 FAIL(아직 `▶`·`✓`·`- `로 그림). 나머지는 PASS.
+
+- [ ] **Step 3: Pane 훅을 새 모양으로 고치기**
+
+- `MARK`를 위 표로, `LABEL`·`TIME`은 그대로. 묶음 이름은 끝남·건너뜀이면 `{ dimColor: true }`, 아니면 `{ bold: true }`(색 없음). 묶음 시간은 진행 중·막힘이면 그 상태 색, 아니면 흐리게.
+- 머리: `Progress`를 지우고 `Text` 한 줄로. `HEAD_ROWS = 3`(제목·막대·빈 줄).
+- `layout(fit)`: 놓인 것 목록(`more-done`?, 묶음들, `more-todo`?)을 만들고, `fit.gaps`면 놓인 것 사이에 `│` 줄(색 `railAfter(i)`)을 앞 것의 마지막 줄로 넣는다. 줄 수 = `HEAD_ROWS` + 모든 줄 + 맨 아래 명령 줄(+ 목록이 있으면 빈 줄 1).
+- 단계 줄은 기존 `row`를 고쳐 묶음 안이면 앞에 `│`(색 `railIn(i)`)와 빈칸을 붙인다(들여쓰기 두 칸 대신).
+- `hang`: 메모가 있으면 한 줄. 앞부분은 맨 위 단계 `┆ `(그 단계 색), 묶음 안 `│ ┆ `.
+- 명령: 진행 중 단계가 있든 없든 Task 1에서는 맨 아래 `calls` Box에 `callLines(┆ subtle, groups, cols)`. `종류:`는 흐리게 Text, 대상은 `fitNames`.
+
+- [ ] **Step 4: 테스트 통과 확인**
+
+Run: `claude plugin test .`
+Expected: 모두 PASS(69 + 새 5 = 74)
+
+- [ ] **Step 5: 검증과 커밋**
+
+Run: `claude plugin validate .` → `✔ Validation passed with warnings`(아이콘 1건)
+
+```powershell
+git add hooks/register.tsx tests/progress.test.tsx
+git commit -m "feat: 패널 머리를 한 줄 막대로, 단계 목록을 진행선으로"
+```
+
+### Task 2: 명령을 진행 중 단계 아래에
+
+**예상 시간:** 40분 · **선행 Task:** Task 1 · **승인 지점:** 없음 · **상태:** 대기
+
+**Files:**
+- Modify: `hooks/register.tsx` (Pane 훅의 `hang`, 명령 자리, `RULES`의 실행 중 칸 문장)
+- Test: `tests/progress.test.tsx`
+
+**Interfaces:**
+- Consumes: Task 1의 `hang`, `callLines`, `groupCalls`, `fitNames`, `MARK`
+- Produces: `callsAt(ls: Step[]): string | undefined` — 진행 중(`doing`) 잎 단계 가운데 `startedAt`이 가장 큰 것의 id. 없으면 `undefined`.
+
+- [ ] **Step 1: 실패하는 테스트 쓰기**
+
+```ts
+test('running commands hang under the step underway', async ($, on) => {
+  // PLAN, a 진행 중, Bash(description '테스트 실행') 5초짜리
+  // 줄 목록 rows = findAll({ type: 'Text', text: /^(◉|○|●|▲|┆|│) / }).map(t => t.text)
+  // rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1] === '┆ 테스트 실행'
+  // Box 'calls' 없음
+})
+
+test('inside a group the command line keeps the rail', async ($, on) => {
+  // b1 진행 중: '│ ◉ 메뉴 화면…' 바로 다음 줄이 '│ ┆ 테스트 실행'
+})
+
+test('with two steps underway the command goes under the one started last', async ($, on) => {
+  // a 진행 중 → 1분 뒤 b1 진행 중: /^│ ┆ 테스트 실행$/ 있음, /^┆ 테스트 실행$/ 없음
+})
+
+test('with only a blocked step the command goes to the bottom', async ($, on) => {
+  // c 막힘: Box 'calls' marginTop 1, /^┆ 테스트 실행$/ 있음
+})
+
+test('a note comes before the commands under the same step', async ($, on) => {
+  // a 진행 중 + note '자료 12장', Bash 하나: '┆ 자료 12장' 다음 줄이 '┆ 테스트 실행'
+})
+
+test('hanging commands are counted so the pane does not scroll', async ($, on) => {
+  // longUnderway + Bash 3개(description '작업1..3'): pane(…, 40, 15)
+  // 예정 1개(12줄)+명령 3 = 15줄 → /○ 그림 삽입/ 있음, /맞춤법 검사/ 없음
+})
+
+test('a hanging command line fits a narrow pane', async ($, on) => {
+  // b1 진행 중, Read 5개(load.py…store.py), pane(…, 24): /^│ ┆ / 줄마다 cells ≤ 24
+})
+
+test('more than five commands under a step count the rest', async ($, on) => {
+  // a 진행 중, Bash 7개: findAll(/^┆ 작업/) 5개, /^외 2개$/ dimColor
+})
+```
+
+규칙 문장 테스트(`the rules are added to the system prompt, last`)에 `expect(last?.text).toMatch(/진행 중 단계 아래/)` 추가.
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `claude plugin test .`
+Expected: 새 테스트 FAIL(명령이 아직 맨 아래에 있음), 규칙 문장 테스트 FAIL
+
+- [ ] **Step 3: 구현**
+
+- `callsAt`으로 고른 단계의 `hang`이 메모 다음에 `callLines(그 단계의 앞부분, groups, cols)`를 돌려준다.
+- 고른 단계가 없을 때만 맨 아래 `calls` Box.
+- `RULES`: `'- 패널의 진행 중 단계 아래에는 지금 돌고 있는 셸 명령(Bash·PowerShell)의 description이 그대로 보인다. description은 사용자가 쓰는 언어로, 무엇을 하는지 알 수 있게 짧게(15자 안팎) 적는다.'`
+
+- [ ] **Step 4: 통과 확인**
+
+Run: `claude plugin test .`
+Expected: 모두 PASS(74 + 8 = 82)
+
+- [ ] **Step 5: 검증과 커밋**
+
+Run: `claude plugin validate .`
+
+```powershell
+git add hooks/register.tsx tests/progress.test.tsx
+git commit -m "feat: 돌고 있는 명령을 진행 중 단계 아래에 표시"
+```
+
+### Task 3: 설명서, 설치본 반영, 화면 확인, develop 병합
+
+**예상 시간:** 15분 + 사용자 확인 · **선행 Task:** Task 2 · **승인 지점:** 실제 패널 화면 확인(사용자) · **상태:** 대기
+
+**Files:**
+- Modify: `README.md` (기능 > 단계 표시, 진행률, 실행 중 목록)
+
+- [ ] **Step 1: README 고치기**
+
+- 단계 표시: `● 완료 · ◉ 진행 중 · ○ 대기 · ▲ 막힘(이유 한 줄) · – 건너뜀`, 왼쪽 세로선(지나온 곳 초록, 지금 묶음 주황, 남은 곳 회색)
+- 진행률: 한 줄 막대 `━━━━──── 3/7 · 1시간 12분째`
+- 실행 중 목록 → "돌고 있는 명령": 진행 중 단계 바로 아래 `┆`로 붙음, 진행 중 단계가 없으면 맨 아래, 없으면 표시 안 함
+
+- [ ] **Step 2: 커밋**
+
+```powershell
+git add README.md
+git commit -m "docs: README에 진행선 모양 반영"
+```
+
+- [ ] **Step 3: 설치본에 복사하고 사용자에게 화면 확인 요청**
+
+`hooks/register.tsx`, `types/index.d.ts`, `README.md`, `tests/progress.test.tsx`를 설치본에 복사. 사용자가 "괜찮다"고 하기 전에는 병합하지 않는다.
+
+- [ ] **Step 4: develop 병합**
+
+```powershell
+git merge develop          # feature/panel-rail 에서. 충돌이면 git merge --abort 후 알림
+claude plugin test .       # 다시 모두 PASS
+git switch develop
+git merge --no-ff feature/panel-rail -m "Merge branch 'feature/panel-rail' into develop"
+```
+
+- [ ] **Step 5: 끝난 계획 옮기기**
+
+`PLAN.md` → `docs/plans/2026-11-24_진행-패널-진행선.md`, develop에 커밋.
