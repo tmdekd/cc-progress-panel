@@ -2018,3 +2018,112 @@ test('rail, branch and dot colors are the same on terminal and desktop', async (
     await ui.unmount()
   }
 })
+
+// ── 2026-11-25 기능 끝 검토(reviews/02_기능끝-검토.md)에서 고친 것 ──────────────
+// A. 끝 단계가 묶음 안이고 그 묶음의 다른 단계도 보이면 "예정 n개 더"는 묶음 안 끝 단계 앞에 온다.
+//    묶음 위에 두면 진행 중인 묶음보다 예정 줄이 먼저 나오고 세로선 색이 어긋난다.
+
+const CHORES = {
+  action: 'plan',
+  title: '집안일',
+  steps: [
+    { id: 'a', label: '준비' },
+    {
+      id: 'g',
+      label: '마무리',
+      children: [
+        { id: 'g1', label: '청소' },
+        { id: 'g2', label: '분리수거' },
+        { id: 'g3', label: '설거지' },
+        { id: 'g4', label: '빨래' },
+        { id: 'g5', label: '보고서' },
+        { id: 'g6', label: '보고' },
+      ],
+    },
+  ],
+}
+
+test('with the last group underway the count of hidden steps sits inside it, before the final step', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(CHORES))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'g1', status: 'doing' }))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    const rows = await railRows(ui)
+    const want = [/^● 준비/, /^◉ 마무리/, /^├─◉ 청소/, /^├─○ 분리수거$/, /^├─○ 설거지$/, /^├─○ 빨래$/, /^│ ┆ 예정 1개 더$/, /^└─○ 보고$/]
+    expect(rows.length).toBe(want.length)
+    want.forEach((re, i) => expect(rows[i]).toMatch(re))
+    // 지나온 곳(준비→마무리)은 초록, 지금 묶음의 가지와 예정 줄의 세로선은 진행 색.
+    const got = (await ui.findAll({ type: 'Text', text: /^(│|├─|└─)$/ })).map(r => r.props.color)
+    expect(got).toEqual(['success', 'claude', 'claude', 'claude', 'claude', 'claude', 'claude'])
+    await ui.unmount()
+  }
+})
+
+test('with the last group ahead the count of hidden steps sits before its final step, not above the group', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(CHORES))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    const rows = await railRows(ui)
+    const want = [/^◉ 준비/, /^○ 마무리$/, /^├─○ 청소$/, /^├─○ 분리수거$/, /^├─○ 설거지$/, /^│ ┆ 예정 2개 더$/, /^└─○ 보고$/]
+    expect(rows.length).toBe(want.length)
+    want.forEach((re, i) => expect(rows[i]).toMatch(re))
+    await ui.unmount()
+  }
+})
+
+// B. 같은 설명의 백그라운드 명령과 보통 명령이 함께 돌아도 두 자리에 모두 보인다(같은 글은 자리마다 합친다).
+test('a background command and a running one with the same description both show, each in its place', async ($, on) => {
+  const w = world(on)
+  on('tool.call', { tool: 'Bash' }, async ($$, e) => {
+    if ((e as unknown as { run_in_background?: boolean }).run_in_background) return { result: { backgroundTaskId: 't1' } }
+    await w.clock.sleep(5 * SEC)
+    return { result: {} }
+  })
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await $.tool.call({ tool: 'Bash', command: 'npm test -- --watch', description: '테스트 실행', run_in_background: true })
+  const call = $.tool.call({ tool: 'Bash', command: 'npm test', description: '테스트 실행' })
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  const ui = await $.ui.mount(pane('terminal'))
+  const rows = await railRows(ui)
+  expect(rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1]).toBe('┆ ▶ 테스트 실행')
+  expect(rows.at(-1)).toBe('┆ ▶ 테스트 실행')
+  expect(rows.filter(r => r === '┆ ▶ 테스트 실행')).toHaveLength(2)
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await call
+})
+
+// C. Review Focus 3: 앞 버전이 적어 둔 실행 중 항목(kind '파일 읽기', label '파일 읽기: x.py')이 남아 있어도 한 줄로 그린다.
+//    $.state 는 다시 불러와도 남으므로 엔진 자리(state.get)가 옛 값을 돌려주게 한다.
+test('a running entry saved by the older panel still draws on one line', async ($, on) => {
+  world(on)
+  const OLD = [{ id: 'o1', label: '파일 읽기: x.py', kind: '파일 읽기', target: 'x.py', startedAt: T0 - 60_000, isBackground: false }]
+  on('state.get', { plugin: 'progress-panel', key: 'running' }, () => ({
+    value: { value: { shape: 'running-1', value: OLD }, version: 1 },
+  }))
+  on('state.set', { plugin: 'progress-panel', key: 'running' }, () => ({ value: { isSet: true, version: 1 } }))
+  await $.session.start(START)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+
+  for (const cols of [40, 24]) {
+    const ui = await $.ui.mount(pane('terminal', cols))
+    const rows = await railRows(ui)
+    const line = rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1]
+    expect(line).toBe('┆ ▶ 파일 읽기 x.py')
+    expect(cells(line ?? '')).toBeLessThanOrEqual(cols)
+    await ui.unmount()
+  }
+})

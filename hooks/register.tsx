@@ -961,11 +961,12 @@ export const register: Register = on => {
     // 돌고 있는 명령: 진행 중 단계 아래에. 그런 단계가 없으면 맨 아래에.
     // 같은 글(같은 파일을 두 번 읽는 등)은 한 줄로.
     const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
-    const shownCalls = visible.filter((c, i) => visible.findIndex(d => d.label === c.label) === i)
+    const once = (list: Running[]) => list.filter((c, i) => list.findIndex(d => d.label === c.label) === i)
     const at = b ? callsAt(leaves(b.steps)) : undefined
     // 백그라운드 명령은 늘 목록 맨 아래에(사용자가 정함, 2026-11-24). 진행 중 단계 아래에는 그 밖의 명령만.
-    const hung = at ? shownCalls.filter(c => !c.isBackground) : []
-    const below = at ? shownCalls.filter(c => c.isBackground) : shownCalls
+    // 같은 글은 자리마다 따로 합친다(같은 설명의 백그라운드 명령이 있어도 지금 도는 명령은 단계 아래에 보인다).
+    const hung = once(at ? visible.filter(c => !c.isBackground) : [])
+    const below = once(at ? visible.filter(c => c.isBackground) : visible)
 
     // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게), 이어서 그 단계에서 돌고 있는 명령.
     const hang = (l: Lead, step: Step): RenderChildren[] => {
@@ -1041,9 +1042,14 @@ export const register: Register = on => {
           order.push({ id: `step-${s.id}`, status: shown(s).status, step: s, kids: seen })
         }
         // 숨긴 예정은 끝 단계가 보이면 그 앞(숨긴 것은 모두 끝 단계보다 앞에 있다), 아니면 맨 끝에.
+        // 끝 단계가 묶음 안이고 그 묶음에 보이는 단계가 더 있으면, 묶음 위가 아니라 묶음 안의 끝 단계 줄 앞에 적는다
+        // (묶음 위에 두면 진행 중인 묶음보다 예정 줄이 먼저 나오고 세로선 색이 어긋난다. 2026-11-25 검토).
         const end = ls.at(-1)
-        const before = end && ids.has(end.id) ? order.length - 1 : order.length
-        if (moreTodo) order.splice(before, 0, { id: 'more-todo', status: 'todo', kids: [] })
+        const endShown = !!end && ids.has(end.id)
+        const inGroup = moreTodo > 0 && endShown && (order.at(-1)?.kids.length ?? 0) > 1
+        if (moreTodo && !inGroup) {
+          order.splice(endShown ? order.length - 1 : order.length, 0, { id: 'more-todo', status: 'todo', kids: [] })
+        }
         // 세로선(사용자가 고름, 2026-11-24): 지나온 곳 초록, 지금 묶음은 그 상태 색, 남은 곳 회색.
         // 지금 묶음 = 처음 끝나지 않은 것.
         const open = order.findIndex(o => !isFinal(o.status))
@@ -1061,6 +1067,14 @@ export const register: Register = on => {
             if (!o.kids.length) lines.push(...hang({ dot: COLOR[s.status] }, s))
             o.kids.forEach((c, k) => {
               const last = i === order.length - 1 && k === o.kids.length - 1
+              if (last && inGroup) {
+                lines.push(
+                  <Text>
+                    {leadOf({ rail: railIn(i), dot: 'subtle' })}
+                    <Text dimColor>{`예정 ${moreTodo}개 더`}</Text>
+                  </Text>,
+                )
+              }
               lines.push(row(c, c.label, false, { color: railIn(i), last }))
               lines.push(...hang({ rail: last ? null : railIn(i), dot: COLOR[c.status] }, c))
             })
