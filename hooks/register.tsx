@@ -256,18 +256,24 @@ function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreD
   }
 }
 
-// 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자(U+FE0F 모양 고르기, U+200D 잇기)는 0칸.
+// 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자(U+FE0F 모양 고르기, U+200D 잇기, U+20E3 키캡)는 0칸.
+// 다만 1칸 글자 뒤의 U+FE0F는 그 글자를 이모지로 그려 2칸으로 만든다(⚠️, ✔️, 1️⃣). 늘어난 1칸을 U+FE0F 몫으로 센다.
 const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|\p{Emoji_Presentation}/u
 
-function width(ch: string): number {
+function width(ch: string, prev = ''): number {
   const c = ch.codePointAt(0) ?? 0
-  if (c === 0xfe0f || c === 0x200d) return 0
+  if (c === 0xfe0f) return prev && width(prev) === 1 ? 1 : 0
+  if (c === 0x200d || c === 0x20e3) return 0
   return WIDE.test(ch) ? 2 : 1
 }
 
 function cells(text: string): number {
   let n = 0
-  for (const ch of text) n += width(ch)
+  let prev = ''
+  for (const ch of text) {
+    n += width(ch, prev)
+    prev = ch
+  }
   return n
 }
 
@@ -313,11 +319,13 @@ function cut(text: string, room: number): string {
   if (room <= 1) return room === 1 ? '…' : ''
   let out = ''
   let used = 0
+  let prev = ''
   for (const ch of text) {
-    const w = width(ch)
+    const w = width(ch, prev)
     if (used + w > room - 1) break
     out += ch
     used += w
+    prev = ch
   }
   return `${out}…`
 }
@@ -675,12 +683,13 @@ async function prune($: EngineInterface, own: string): Promise<void> {
 // 그리는 훅이 기다리는 값을 신호가 끊기면 놓고 바로 끝낸다. 컴퓨터가 몹시 느리면 $ 호출이 30초 한도를 넘겨
 // 엔진이 그리기를 건너뛰는데, 그 뒤에도 훅이 5초 넘게 남아 있으면 '신호를 무시했다'고 센다. 2번 이어지면
 // hooks worker를 갈아 그때 돌던 도구 호출이 실패한다(2026-11-24, Read가 "ignored its signal 2 times"로 실패).
+// p에는 늘 처리기를 단다. 이미 끊겼어도 나중에 p가 거절되면 처리되지 않은 거절로 남지 않게.
 function orStop<T>(signal: AbortSignal, p: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    if (signal.aborted) return reject(signal.reason)
     const stop = () => reject(signal.reason)
     signal.addEventListener('abort', stop, { once: true })
     p.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop))
+    if (signal.aborted) stop()
   })
 }
 

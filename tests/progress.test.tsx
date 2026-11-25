@@ -131,11 +131,15 @@ function world(on: On, o: { sessionId?: string; store?: Record<string, unknown> 
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
 
-// 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자는 0칸.
+// 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자는 0칸. 1칸 글자 뒤의 U+FE0F는 그 글자를 2칸으로 만든다.
 function cells(text: string): number {
   let n = 0
+  let prev = ''
   for (const ch of text) {
-    if (/[\ufe0f\u200d]/.test(ch)) continue
+    const before = prev
+    prev = ch
+    if (ch === '\ufe0f' && before && cells(before) === 1) n += 1
+    if (/[\ufe0f\u200d\u20e3]/.test(ch)) continue
     if (/\p{Emoji_Presentation}/u.test(ch)) n += 1
     n += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1
   }
@@ -1773,6 +1777,22 @@ test('an emoji counts as two cells so the time stays at the right edge', async (
   const ui = await $.ui.mount(pane('terminal', 40))
   const row = await ui.find({ type: 'Text', text: /^◉ 배포 🚀 +\d+분째$/ })
   expect(cells(row?.text ?? '')).toBe(40)
+  await ui.unmount()
+})
+
+// ⚠·✔처럼 보통 1칸인 글자도 뒤에 U+FE0F가 붙으면 이모지로 그려 2칸이다(2026-11-25 검토).
+test('a sign followed by the emoji selector counts as two cells', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(tool({ action: 'plan', title: '설정', steps: [{ id: 'x', label: '\u26a0\ufe0f 설정 확인' }, { id: 'y', label: '마무리' }] }))
+  await $.tool.call(tool({ action: 'update', id: 'x', status: 'doing' }))
+  await w.clock.advance(5 * MIN)
+
+  const ui = await $.ui.mount(pane('terminal', 40))
+  // 40칸 = 표시와 빈칸 2 + 이름 12(⚠️ 2, 빈칸 2, 한글 8) + 빈칸 21 + 시간 5
+  expect(await ui.find({ type: 'Text', text: /^◉ \u26a0\ufe0f 설정 확인 {21}5분째$/ })).toBeDefined()
+  expect(cells('\u26a0\ufe0f 설정 확인')).toBe(12)
+  expect(cells('1\ufe0f\u20e3 준비')).toBe(7)
   await ui.unmount()
 })
 
