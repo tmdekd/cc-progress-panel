@@ -233,7 +233,50 @@ const FITS: readonly Fit[] = [
 // 패널 머리: 제목 1줄 + 막대와 숫자 1줄 + 빈 줄 1줄.
 const HEAD_ROWS = 3
 
-function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreDone: number; moreTodo: number } {
+// 그릴 차례: 보이는 단계·묶음, 그리고 숨긴 예정이 이어진 덩어리(more). 덩어리마다 그 자리에 개수를 적는다
+// (사용자가 고름, 2026-11-25). 보이는 아래 단계가 없는 묶음은 그리지 않으므로 그 안의 숨긴 예정은 맨 위 덩어리에 든다.
+// 숨긴 끝남은 맨 위 "완료 n개 더"에 들므로 덩어리를 끊지 않는다.
+type KidSlot = { kind: 'step'; step: Step } | { kind: 'more'; steps: Step[] }
+type Slot = KidSlot | { kind: 'group'; step: Step; kids: KidSlot[] }
+
+function slots(steps: readonly Step[], ids: Set<string>): Slot[] {
+  const out: Slot[] = []
+  let run: Step[] = []
+  const flush = () => {
+    if (run.length) out.push({ kind: 'more', steps: run })
+    run = []
+  }
+  for (const s of steps) {
+    const kids = s.children ?? []
+    if (!kids.length) {
+      if (ids.has(s.id)) {
+        flush()
+        out.push({ kind: 'step', step: s })
+      } else if (s.status === 'todo') run.push(s)
+      continue
+    }
+    if (!kids.some(c => ids.has(c.id))) {
+      run.push(...kids.filter(c => c.status === 'todo'))
+      continue
+    }
+    flush()
+    const inner: KidSlot[] = []
+    let hid: Step[] = []
+    for (const c of kids) {
+      if (ids.has(c.id)) {
+        if (hid.length) inner.push({ kind: 'more', steps: hid })
+        hid = []
+        inner.push({ kind: 'step', step: c })
+      } else if (c.status === 'todo') hid.push(c)
+    }
+    if (hid.length) inner.push({ kind: 'more', steps: hid })
+    out.push({ kind: 'group', step: s, kids: inner })
+  }
+  flush()
+  return out
+}
+
+function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreDone: number } {
   const ids = new Set(ls.filter(s => s.status === 'doing' || s.status === 'blocked').map(s => s.id))
   const fin = ls.filter(s => isFinal(s.status))
   const todo = ls.filter(s => s.status === 'todo')
@@ -244,16 +287,14 @@ function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreD
   const end = ls.at(-1)
   if (fit.end && end?.status === 'todo') ids.add(end.id)
   // 숨는 것이 딱 1개이고 맨 위 단계이며 메모가 없으면 "1개 더" 대신 그 단계를 그린다. 줄 수가 같다.
+  // 끝남은 숨는 것 전체로, 예정은 숨은 자리(덩어리)마다 본다.
   const top = new Set(steps.map(s => s.id))
-  for (const group of [fin, todo]) {
-    const hidden = group.filter(s => !ids.has(s.id))
+  const one = (hidden: Step[]) => {
     if (hidden.length === 1 && top.has(hidden[0]!.id) && !hidden[0]!.note) ids.add(hidden[0]!.id)
   }
-  return {
-    ids,
-    moreDone: fin.filter(s => !ids.has(s.id)).length,
-    moreTodo: todo.filter(s => !ids.has(s.id)).length,
-  }
+  one(fin.filter(s => !ids.has(s.id)))
+  for (const sl of slots(steps, ids)) if (sl.kind === 'more') one(sl.steps)
+  return { ids, moreDone: fin.filter(s => !ids.has(s.id)).length }
 }
 
 // 화면 폭: 한글·전각·이모지는 2칸, 이모지 이음 글자(U+FE0F 모양 고르기, U+200D 잇기, U+20E3 키캡)는 0칸.
@@ -1053,25 +1094,15 @@ export const register: Register = on => {
 
       // 한 모양(fit)으로 놓을 것과 그 줄 수. 그릴 줄로 세므로 셈과 그림이 어긋나지 않는다.
       const layout = (fit: Fit) => {
-        const { ids, moreDone, moreTodo } = compact(ls, fit, b.steps)
-        // 놓을 것: 숨긴 끝남, 보이는 단계 묶음들, 숨긴 예정. 이 차례로 세로선 색을 정한다.
-        const order: { id: string; status: StepStatus; step?: Step; kids: Step[] }[] = []
-        if (moreDone) order.push({ id: 'more-done', status: 'done', kids: [] })
-        for (const s of b.steps) {
-          const kids = s.children ?? []
-          const seen = kids.filter(c => ids.has(c.id))
-          // 묶음은 보이는 아래 단계가 있을 때만, 그 단계들만 그린다.
-          if (kids.length ? seen.length === 0 : !ids.has(s.id)) continue
-          order.push({ id: `step-${s.id}`, status: shown(s).status, step: s, kids: seen })
-        }
-        // 숨긴 예정은 끝 단계가 보이면 그 앞(숨긴 것은 모두 끝 단계보다 앞에 있다), 아니면 맨 끝에.
-        // 끝 단계가 묶음 안이고 그 묶음에 보이는 단계가 더 있으면, 묶음 위가 아니라 묶음 안의 끝 단계 줄 앞에 적는다
-        // (묶음 위에 두면 진행 중인 묶음보다 예정 줄이 먼저 나오고 세로선 색이 어긋난다. 2026-11-25 검토).
-        const end = ls.at(-1)
-        const endShown = !!end && ids.has(end.id)
-        const inGroup = moreTodo > 0 && endShown && (order.at(-1)?.kids.length ?? 0) > 1
-        if (moreTodo && !inGroup) {
-          order.splice(endShown ? order.length - 1 : order.length, 0, { id: 'more-todo', status: 'todo', kids: [] })
+        const { ids, moreDone } = compact(ls, fit, b.steps)
+        // 놓을 것: 숨긴 끝남, 그리고 목록 차례의 보이는 단계·묶음과 숨긴 예정 덩어리. 이 차례로 세로선 색을 정한다.
+        // 묶음은 보이는 아래 단계가 있을 때만, 그 단계들만 그린다(slots).
+        const order: { id: string; status: StepStatus; slot?: Slot }[] = []
+        if (moreDone) order.push({ id: 'more-done', status: 'done' })
+        let more = 0
+        for (const sl of slots(b.steps, ids)) {
+          if (sl.kind === 'more') order.push({ id: `more-todo-${more++}`, status: 'todo', slot: sl })
+          else order.push({ id: `step-${sl.step.id}`, status: shown(sl.step).status, slot: sl })
         }
         // 세로선(사용자가 고름, 2026-11-24): 지나온 곳 초록, 지금 묶음은 그 상태 색, 남은 곳 회색.
         // 지금 묶음 = 처음 끝나지 않은 것.
@@ -1082,25 +1113,32 @@ export const register: Register = on => {
         const railAfter = (i: number): Color => (open < 0 || i + 1 < open || nowAt(i + 1) ? 'success' : 'subtle')
         const blocks = order.map((o, i) => {
           const lines: RenderChildren[] = []
-          if (o.id === 'more-done') lines.push(moreLine('success', `완료 ${moreDone}개 더`))
-          else if (o.id === 'more-todo') lines.push(moreLine('subtle', `예정 ${moreTodo}개 더`))
-          else if (o.step) {
-            const s = o.step
-            lines.push(row(shown(s), s.label, o.kids.length > 0))
-            if (!o.kids.length) lines.push(...hang({ dot: COLOR[s.status] }, s))
-            o.kids.forEach((c, k) => {
-              const last = i === order.length - 1 && k === o.kids.length - 1
-              if (last && inGroup) {
-                lines.push(
-                  <Text>
-                    {leadOf({ rail: railIn(i), dot: 'subtle' })}
-                    <Text dimColor>{`예정 ${moreTodo}개 더`}</Text>
-                  </Text>,
-                )
-              }
-              lines.push(row(c, c.label, false, { color: railIn(i), last }))
-              lines.push(...hang({ rail: last ? null : railIn(i), dot: COLOR[c.status] }, c))
-            })
+          const sl = o.slot
+          if (!sl) lines.push(moreLine('success', `완료 ${moreDone}개 더`))
+          else if (sl.kind === 'more') lines.push(moreLine('subtle', `예정 ${sl.steps.length}개 더`))
+          else {
+            const s = sl.step
+            lines.push(row(shown(s), s.label, sl.kind === 'group'))
+            if (sl.kind === 'step') lines.push(...hang({ dot: COLOR[s.status] }, s))
+            else {
+              // 가지 └─ 는 목록 맨 끝 묶음의 마지막 단계에. 그 뒤에 오는 개수 줄은 세로선 없이 들여 쓴다.
+              const end = i === order.length - 1 ? sl.kids.map(k => k.kind).lastIndexOf('step') : -1
+              sl.kids.forEach((k, j) => {
+                if (k.kind === 'more') {
+                  lines.push(
+                    <Text>
+                      {leadOf({ rail: end >= 0 && j > end ? null : railIn(i), dot: 'subtle' })}
+                      <Text dimColor>{`예정 ${k.steps.length}개 더`}</Text>
+                    </Text>,
+                  )
+                  return
+                }
+                const c = k.step
+                const last = j === end
+                lines.push(row(c, c.label, false, { color: railIn(i), last }))
+                lines.push(...hang({ rail: last ? null : railIn(i), dot: COLOR[c.status] }, c))
+              })
+            }
           }
           // 맨 위 묶음 사이의 빈 줄 대신 세로선 한 줄.
           if (fit.gaps && i < order.length - 1) lines.push(<Text color={railAfter(i)}>│</Text>)
