@@ -2479,3 +2479,40 @@ test('when the final step is dropped the count closes the rail of the last group
     await ui.unmount()
   }
 })
+
+// ── 2026-11-25 검토에서 미룬 것: "개수 대신 그 단계"는 줄 수가 같을 때만 ──────────────
+
+test('a lone finished step that would split the hidden steps is counted instead', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '책 만들기',
+      steps: [
+        { id: 'p', label: '준비' },
+        { id: 'a', label: '자료' },
+        { id: 'b', label: '목차' },
+        { id: 'c', label: '초안' },
+        { id: 'd', label: '본문' },
+        { id: 'e1', label: '표1' },
+        { id: 'e2', label: '표2' },
+        { id: 'f', label: '그림' },
+        { id: 'g1', label: '부록1' },
+        { id: 'g2', label: '부록2' },
+        { id: 'h', label: '인쇄' },
+      ],
+    }),
+  )
+  // 그림을 먼저, 준비를 나중에 끝낸다. 숨는 끝난 단계는 그림 하나지만, 그리면 표1·표2와 부록1·부록2가 나뉘어 2줄 는다.
+  await $.tool.call(tool({ action: 'update', id: 'f', status: 'done' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'p', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'd', status: 'doing' }))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    await expectRows(ui, [/^┆ 완료 1개 더$/, /^● 준비/, /^○ 자료$/, /^○ 목차$/, /^○ 초안$/, /^◉ 본문/, /^┆ 예정 4개 더$/, /^○ 인쇄$/])
+    await ui.unmount()
+  }
+})
