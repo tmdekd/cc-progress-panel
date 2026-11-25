@@ -1181,8 +1181,8 @@ test('a long list in a tall pane shows every step instead of a one-step count', 
   const w = world(on)
   await longUnderway($, w)
 
-  // 예정 3개 모양: 숨는 끝남(자료 수집)과 예정(수정 반영)이 하나씩이라 개수 줄 대신 그 단계를 그린다.
-  // 머리 3 + 단계 8 + 세로선 7 = 18줄. 40줄에 들어간다.
+  // 높이에 여유가 있어 예정과 끝난 단계를 모두 그린다.
+  // 머리 3 + 단계 8 + 세로선 7 = 18줄. 명령 줄 자리 2줄을 더해도 40줄에 들어간다.
   const ui = await $.ui.mount(pane('terminal', 40, 40))
   expect(
     await texts(ui, /^● 자료 수집/, /^● 목차 구성/, /^◉ 초안 작성/, /^○ 그림 삽입/, /^○ 맞춤법 검사/, /^○ 검토 요청/, /^○ 수정 반영/, /^○ 게시/),
@@ -1222,7 +1222,8 @@ test('the finished step kept is the one that ended last, not the last in order',
   await $.tool.call(tool({ action: 'update', id: 's1', status: 'done' }))
   await $.tool.call(tool({ action: 'update', id: 's4', status: 'doing' }))
 
-  const ui = await $.ui.mount(pane('terminal'))
+  // 이 모양을 보려고 높이를 16줄로 둔다. 40줄이면 늘린 모양을 그린다.
+  const ui = await $.ui.mount(pane('terminal', 40, 16))
   expect(await texts(ui, /● 자료 수집/, /목차 구성/, /초안 작성/, /^┆ 완료 2개 더$/)).toEqual([true, false, false, true])
   await ui.unmount()
 })
@@ -1289,7 +1290,8 @@ test('a group with none of its steps shown is left out', async ($, on) => {
   )
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
 
-  const ui = await $.ui.mount(pane('terminal'))
+  // 이 모양을 보려고 높이를 14줄로 둔다. 40줄이면 늘린 모양을 그린다.
+  const ui = await $.ui.mount(pane('terminal', 40, 14))
   expect(await texts(ui, /^┆ 예정 2개 더$/, /^발표$/, /슬라이드/, /^○ 뒷정리$/)).toEqual([true, false, false, true])
   expect(await ui.find({ type: 'Box', key: 'step-g' })).toBeUndefined()
   await ui.unmount()
@@ -1305,7 +1307,8 @@ test('a group shows only the steps of it that are shown', async ($, on) => {
   await w.clock.advance(1 * MIN)
   await $.tool.call(tool({ action: 'update', id: 'b2', status: 'done' }))
 
-  const ui = await $.ui.mount(pane('terminal'))
+  // 이 모양을 보려고 높이를 9줄로 둔다. 40줄이면 늘린 모양을 그린다.
+  const ui = await $.ui.mount(pane('terminal', 40, 9))
   expect(await texts(ui, /^┆ 완료 2개 더$/, /● 화면/, /├─● 주문 화면/, /○ 공개하기/)).toEqual([true, true, true, true])
   expect(await texts(ui, /메뉴 화면/)).toEqual([false])
   await ui.unmount()
@@ -1460,8 +1463,8 @@ test('the rail is green where the work has passed, in the step color where it is
   await $.tool.call(tool(PLAN))
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
   await $.tool.call(tool({ action: 'update', id: 'b1', status: 'doing' }))
-  const colors = async () => {
-    const ui = await $.ui.mount(pane('terminal'))
+  const colors = async (rows = 40) => {
+    const ui = await $.ui.mount(pane('terminal', 40, rows))
     const got = (await ui.findAll({ type: 'Text', text: /^(│|├─|└─)$/ })).map(r => r.props.color)
     await ui.unmount()
     return got
@@ -1474,9 +1477,11 @@ test('the rail is green where the work has passed, in the step color where it is
   expect(await colors()).toEqual(['success', 'warning', 'warning', 'subtle'])
 
   for (const id of ['b1', 'b2', 'c']) await $.tool.call(tool({ action: 'update', id, status: 'done' }))
-  // 다 끝나면 숨긴 것(완료 3개 더)과 마지막 단계 사이도 초록.
-  expect(await colors()).toEqual(['success'])
-  const ui = await $.ui.mount(pane('terminal'))
+  // 다 끝나면 모두 초록. 40줄이면 끝난 단계가 모두 보인다.
+  expect(await colors()).toEqual(['success', 'success', 'success', 'success'])
+  // 6줄이면 숨긴 것(완료 3개 더)과 마지막 단계 사이도 초록.
+  expect(await colors(6)).toEqual(['success'])
+  const ui = await $.ui.mount(pane('terminal', 40, 6))
   expect((await ui.find({ type: 'Text', text: /^┆$/ }))?.props.color).toBe('success')
   await ui.unmount()
 })
@@ -1935,13 +1940,15 @@ test('a single hidden step with a note stays a count so the pane does not grow',
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
 
   // 숨는 예정은 환전 하나. 메모가 없으면 그 단계를 그린다.
-  let ui = await $.ui.mount(pane('terminal'))
+  // 이 모양을 보려고 높이를 14줄로 둔다. 40줄이면 늘린 모양을 그린다.
+  let ui = await $.ui.mount(pane('terminal', 40, 14))
   expect(await texts(ui, /^○ 환전$/, /개 더$/)).toEqual([true, false])
   await ui.unmount()
 
   // 메모가 있으면 그리면 한 줄 늘어나므로 개수로 둔다.
   await $.tool.call(tool({ action: 'update', id: 'e', status: 'todo', note: '은행 예약' }))
-  ui = await $.ui.mount(pane('terminal'))
+  // 이 모양을 보려고 높이를 14줄로 둔다. 40줄이면 늘린 모양을 그린다.
+  ui = await $.ui.mount(pane('terminal', 40, 14))
   expect(await texts(ui, /^┆ 예정 1개 더$/, /환전/, /^○ 출발$/)).toEqual([true, false, true])
   await ui.unmount()
 })
@@ -2245,7 +2252,8 @@ test('with the last group ahead the count of hidden steps sits before its final 
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
 
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 11줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 11))
     const rows = await railRows(ui)
     const want = [/^◉ 준비/, /^○ 마무리$/, /^├─○ 청소$/, /^├─○ 분리수거$/, /^├─○ 설거지$/, /^│ ┆ 예정 2개 더$/, /^└─○ 보고$/]
     expect(rows.length).toBe(want.length)
@@ -2337,7 +2345,8 @@ test('a later step started first: the hidden steps are counted where they are', 
 
   // 숨는 예정: 시안(개발 앞), 검수·배포 준비(개발 뒤). 시안은 혼자라 이름으로 그린다.
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 16줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 16))
     await expectRows(ui, [/^○ 기획$/, /^○ 조사$/, /^○ 설계$/, /^○ 시안$/, /^◉ 개발/, /^┆ 예정 2개 더$/, /^○ 공개$/])
     await ui.unmount()
   }
@@ -2352,7 +2361,8 @@ test('two places with hidden steps each get their own count', async ($, on) => {
 
   // 시안은 메모가 있어 그리면 줄이 늘므로 개수로 둔다. 개수 줄 둘이 모두 그려진다.
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 16줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 16))
     await expectRows(ui, [/^○ 기획$/, /^○ 조사$/, /^○ 설계$/, /^┆ 예정 1개 더$/, /^◉ 개발/, /^┆ 예정 2개 더$/, /^○ 공개$/])
     await ui.unmount()
   }
@@ -2385,7 +2395,8 @@ test('hidden steps before a group stay above it', async ($, on) => {
   await $.tool.call(tool({ action: 'update', id: 'g1', status: 'doing' }))
 
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 14줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 14))
     await expectRows(ui, [/^○ a$/, /^○ b$/, /^○ c$/, /^┆ 예정 2개 더$/, /^◉ G/, /^├─◉ g1/, /^└─○ g2$/])
     await ui.unmount()
   }
@@ -2419,7 +2430,8 @@ test('hidden steps inside a group are counted between their neighbours', async (
 
   // 숨는 것은 t4·t5 둘. 혼자가 아니라 개수로 둘 사이에 적는다.
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 10줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 10))
     await expectRows(ui, [/^◉ G/, /^├─○ t1$/, /^├─○ t2$/, /^├─○ t3$/, /^│ ┆ 예정 2개 더$/, /^├─◉ t6/, /^└─○ t7$/])
     await ui.unmount()
   }
@@ -2455,7 +2467,8 @@ test('finished steps do not split a run of hidden steps', async ($, on) => {
 
   // 숨긴 끝남(색인·목차)은 맨 위 "완료 2개 더"에 들고, 부록과 참고는 한 덩어리로 센다.
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 18줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 18))
     await expectRows(ui, [
       /^┆ 완료 2개 더$/,
       /^● 준비/,
@@ -2557,7 +2570,8 @@ test('a lone finished step that would split the hidden steps is counted instead'
   await $.tool.call(tool({ action: 'update', id: 'd', status: 'doing' }))
 
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 18줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 18))
     await expectRows(ui, [/^┆ 완료 1개 더$/, /^● 준비/, /^○ 자료$/, /^○ 목차$/, /^○ 초안$/, /^◉ 본문/, /^┆ 예정 4개 더$/, /^○ 인쇄$/])
     await ui.unmount()
   }
@@ -2586,7 +2600,8 @@ test('a lone hidden step of a group not drawn stays a count', async ($, on) => {
 
   // 슬라이드를 그리면 발표 머리 줄까지 1줄이 는다.
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 14줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 14))
     await expectRows(ui, [/^◉ 준비/, /^○ b$/, /^○ c$/, /^○ d$/, /^┆ 예정 1개 더$/, /^○ 뒷정리$/])
     await ui.unmount()
   }
@@ -2612,7 +2627,8 @@ test('a lone finished step of a group not drawn stays a count', async ($, on) =>
   await $.tool.call(tool({ action: 'update', id: 'b', status: 'doing' }))
 
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 8줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 8))
     await expectRows(ui, [/^┆ 완료 1개 더$/, /^● 준비/, /^◉ b/])
     await ui.unmount()
   }
@@ -2683,8 +2699,16 @@ test('a lone hidden step at the end of the last group takes the closing branch',
 
   // 끝 단계 g6이 끝나 숨고, 묶음 안 마지막 덩어리 g5 하나가 이름으로 그려지며 └─를 받는다.
   for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface, 40, 40))
+    // 이 모양을 보려고 높이를 13줄로 둔다. 40줄이면 늘린 모양을 그린다.
+    const ui = await $.ui.mount(pane(surface, 40, 13))
     await expectRows(ui, [/^┆ 완료 1개 더$/, /^● 준비/, /^◉ 마무리/, /^├─◉ g1/, /^├─○ g2$/, /^├─○ g3$/, /^├─○ g4$/, /^└─○ g5$/])
+    await ui.unmount()
+  }
+
+  // 40줄이면 끝난 g6까지 그린다. 이 모양(12줄)은 끝난 것을 하나만 그린 모양(13줄)보다 짧지만 더 넉넉하므로 먼저 고른다.
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    await expectRows(ui, [/^● 준비/, /^◉ 마무리/, /^├─◉ g1/, /^├─○ g2$/, /^├─○ g3$/, /^├─○ g4$/, /^├─○ g5$/, /^└─● g6/])
     await ui.unmount()
   }
 })
@@ -2737,4 +2761,120 @@ test('a lone hidden step inside a shown group is drawn instead of counted', asyn
     ])
     await ui.unmount()
   }
+})
+
+// ── 2026-11-25 높이에 따라 늘리기 ─────────────────────────────────────────
+// 자리가 남으면 예정부터 늘리고, 예정이 다 보이면 끝난 단계를 최근 것부터 늘린다(사용자가 고름).
+// 늘린 모양은 명령 줄 2줄 자리를 더 둔다(사용자가 고름). 명령이 2줄 이하로 오가도 목록이 그대로다.
+const GROW = {
+  action: 'plan',
+  title: '누리집 만들기',
+  steps: [
+    { id: 'a1', label: '기획' },
+    { id: 'a2', label: '조사' },
+    { id: 'a3', label: '설계' },
+    { id: 'a4', label: '시안' },
+    { id: 'b', label: '개발' },
+    { id: 'c1', label: '화면' },
+    { id: 'c2', label: '서버' },
+    { id: 'c3', label: '연결' },
+    { id: 'c4', label: '시험' },
+    { id: 'c5', label: '문서' },
+    { id: 'c6', label: '배포' },
+    { id: 'c7', label: '공개' },
+  ],
+}
+
+// 끝난 넷을 1분 간격으로 order 차례로 끝내고 개발을 시작한다.
+async function growUnderway($: Kit, w: ReturnType<typeof world>, order = ['a1', 'a2', 'a3', 'a4']) {
+  await $.session.start(START)
+  await $.tool.call(tool(GROW))
+  for (const id of order) {
+    await $.tool.call(tool({ action: 'update', id, status: 'done' }))
+    await w.clock.advance(1 * MIN)
+  }
+  await $.tool.call(tool({ action: 'update', id: 'b', status: 'doing' }))
+}
+
+const UPCOMING = [/^○ 화면$/, /^○ 서버$/, /^○ 연결$/, /^○ 시험$/, /^○ 문서$/, /^○ 배포$/, /^○ 공개$/]
+
+test('a taller pane shows more upcoming steps before more finished ones', async ($, on) => {
+  const w = world(on)
+  await growUnderway($, w)
+
+  // 줄 수: 기본(예정 3개) 18, 예정 4개 20, 예정 전부 22, 끝난 2개 24, 전부 26. 늘린 모양은 2줄이 더 있어야 고른다.
+  const cases: [number, RegExp[]][] = [
+    [21, [/^┆ 완료 3개 더$/, /^● 시안/, /^◉ 개발/, /^○ 화면$/, /^○ 서버$/, /^○ 연결$/, /^┆ 예정 3개 더$/, /^○ 공개$/]],
+    [22, [/^┆ 완료 3개 더$/, /^● 시안/, /^◉ 개발/, /^○ 화면$/, /^○ 서버$/, /^○ 연결$/, /^○ 시험$/, /^┆ 예정 2개 더$/, /^○ 공개$/]],
+    [24, [/^┆ 완료 3개 더$/, /^● 시안/, /^◉ 개발/, ...UPCOMING]],
+    [26, [/^┆ 완료 2개 더$/, /^● 설계/, /^● 시안/, /^◉ 개발/, ...UPCOMING]],
+    [28, [/^● 기획/, /^● 조사/, /^● 설계/, /^● 시안/, /^◉ 개발/, ...UPCOMING]],
+    [40, [/^● 기획/, /^● 조사/, /^● 설계/, /^● 시안/, /^◉ 개발/, ...UPCOMING]],
+  ]
+  for (const surface of SURFACES) {
+    for (const [rows, want] of cases) {
+      const ui = await $.ui.mount(pane(surface, 40, rows))
+      await expectRows(ui, want)
+      await ui.unmount()
+    }
+  }
+})
+
+test('the finished steps added are the ones that ended last', async ($, on) => {
+  const w = world(on)
+  // 끝낸 차례: 시안 → 기획 → 설계 → 조사. 최근 둘은 조사와 설계이고 목록 차례로 그린다.
+  await growUnderway($, w, ['a4', 'a1', 'a3', 'a2'])
+
+  const ui = await $.ui.mount(pane('terminal', 40, 26))
+  await expectRows(ui, [/^┆ 완료 2개 더$/, /^● 조사/, /^● 설계/, /^◉ 개발/, ...UPCOMING])
+  await ui.unmount()
+})
+
+test('a running command does not change a grown pane', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await growUnderway($, w)
+  const head = [/^┆ 완료 3개 더$/, /^● 시안/, /^◉ 개발/]
+  const tail = [/^○ 화면$/, /^○ 서버$/, /^○ 연결$/, /^○ 시험$/, /^┆ 예정 2개 더$/, /^○ 공개$/]
+
+  // 22줄: 예정 4개 모양(20줄)에 명령 줄 2줄 자리. 명령이 1줄이든 2줄이든 같은 모양이다.
+  let calls = await runBash($, w, '테스트 실행')
+  let ui = await $.ui.mount(pane('terminal', 40, 22))
+  await expectRows(ui, [...head, /^┆ ▶ 테스트 실행$/, ...tail])
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+
+  calls = await runBash($, w, '테스트 실행', '타입 검사')
+  ui = await $.ui.mount(pane('terminal', 40, 22))
+  await expectRows(ui, [...head, /^┆ ▶ 테스트 실행$/, /^┆ ▶ 타입 검사$/, ...tail])
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
+test('more than two command lines shrink a grown pane instead of scrolling', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Bash')
+  await growUnderway($, w)
+
+  // 명령 3줄이면 예정 4개 모양은 23줄이라 넘친다. 기본 모양(18줄 + 3줄)으로 그린다.
+  const calls = await runBash($, w, '테스트 실행', '타입 검사', '검증')
+  const ui = await $.ui.mount(pane('terminal', 40, 22))
+  await expectRows(ui, [
+    /^┆ 완료 3개 더$/,
+    /^● 시안/,
+    /^◉ 개발/,
+    /^┆ ▶ 테스트 실행$/,
+    /^┆ ▶ 타입 검사$/,
+    /^┆ ▶ 검증$/,
+    /^○ 화면$/,
+    /^○ 서버$/,
+    /^○ 연결$/,
+    /^┆ 예정 3개 더$/,
+    /^○ 공개$/,
+  ])
+  await ui.unmount()
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
 })
