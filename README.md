@@ -70,3 +70,15 @@
   ```
 
 - 데스크톱 앱에서: 입력창 옆 + → Plugins → Add marketplace에 `tmdekd/cc-progress-panel` 입력 → Add plugin
+
+- 업데이트: main에 새 커밋이 올라올 때마다 새 버전이 됨
+  - 자동 업데이트는 기본으로 꺼져 있음(Anthropic 공식 마켓플레이스가 아니라서). 켜려면 입력창에서 `/plugin` → Marketplaces → `cc-progress-panel` → Enable auto-update. 켜 두면 Claude Code를 켤 때 새 버전을 받음
+  - 직접 받으려면 셸에서:
+
+    ```
+    claude plugin update progress-panel@cc-progress-panel
+    ```
+
+  - 받은 뒤 `/reload-plugins`를 실행하거나 Claude Code를 다시 켜면 적용
+
+- 라이선스: MIT(`LICENSE` 참고)
