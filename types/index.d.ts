@@ -10,6 +10,9 @@ export type Step = {
   note?: string
   startedAt?: number
   endedAt?: number
+  // 마지막으로 진행 중이 된 시각(일한 시각). 막혔다가 다시 진행 중이 되면 새로 적는다. startedAt 은 처음 시작한 때 그대로다.
+  // 돌고 있는 명령은 이 값이 가장 큰 진행 중 단계 아래에 붙는다. 없어도 되는 칸이라 모양 태그를 올리지 않는다.
+  doingSince?: number
   children?: Step[]
 }
 
@@ -34,6 +37,10 @@ export type BoardEntry = {
 export type Running = {
   id: string
   label: string
+  // 파일·검색 도구의 종류(예: '읽기')와 대상(예: 'db/chat.py:1-40'). 패널은 "▶ 종류 대상"으로 한 줄씩 그리고,
+  // 좁으면 대상만 줄인다. 없어도 되는 칸이라 옛 값도 그대로 읽힌다(모양 태그를 올리지 않는다).
+  kind?: string
+  target?: string
   startedAt: number
   isBackground: boolean
   taskId?: string
