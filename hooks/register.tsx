@@ -286,7 +286,11 @@ function numeral(c: number): string | undefined {
   return undefined
 }
 
+// 맨 앞 번호 하나 뒤에 빈칸이 오면 목록 번호로 읽히게 점을 붙인다(❶ 자료 → 1. 자료).
+// ⑴ → (1)처럼 제 표시가 있는 번호는 그대로 둔다. 번호 글자는 모두 한 글자 단위(BMP)라 text[1]이 그 뒤 글자다.
 function plain(text: string): string {
+  const lead = numeral(text.codePointAt(0) ?? 0)
+  if (lead && /^[0-9A-Za-z]+$/.test(lead) && text[1] === ' ') text = `${lead}.${text.slice(1)}`
   let out = ''
   let after = false
   for (const ch of text) {
@@ -794,9 +798,9 @@ export const register: Register = on => {
       const fresh: { kind: AlertKind; text: string }[] = []
       if (status === 'done') {
         const took = step.startedAt !== undefined ? fmt(w - step.startedAt) : ''
-        fresh.push({ kind: 'done', text: `✓ ${step.label} 완료${took ? ` (${took} 걸림)` : ''}` })
+        fresh.push({ kind: 'done', text: `✓ ${plain(step.label)} 완료${took ? ` (${took} 걸림)` : ''}` })
       } else if (status === 'blocked') {
-        fresh.push({ kind: 'blocked', text: `⚠ ${step.label}에서 막힘${note ? `: ${note}` : ''}` })
+        fresh.push({ kind: 'blocked', text: `⚠ ${plain(step.label)}에서 막힘${note ? `: ${plain(note)}` : ''}` })
       }
       if (!wasAllFinal && allFinal(copy)) fresh.push({ kind: 'all', text: '✓ 모든 단계 완료' })
       await raise($, fresh, t)
