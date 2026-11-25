@@ -221,17 +221,30 @@ function totalTime(ls: Step[], t: number): string {
 // 예정은 앞에서 3개까지. 패널 높이에 안 들어가면 FITS 의 다음 모양으로 줄여 스크롤이 생기지 않게 한다.
 // 끝 단계(2026-11-24): 마지막 단계가 예정이면 일이 어디서 끝나는지 보이게 늘 그린다(end). 거의 마지막 모양에서만 뺀다.
 // 하나로(one, 2026-11-25): 숨긴 예정은 자리마다 개수를 적지만, 무엇으로도 모자라면 끝으로 개수 줄 하나로 합친다.
-type Fit = { todo: number; recent: boolean; gaps: boolean; end: boolean; one?: boolean }
+// 늘리기(grow, 2026-11-25 사용자가 고름): 높이에 여유가 있으면 예정을 앞에서 하나씩 전부까지, 그다음 끝난 것을
+// 최근에 끝난 것부터 전부까지 더 보인다. 늘린 모양은 명령 줄을 CALL_ROOM 줄 이상으로 쳐서, 명령이 오가도 목록이 그대로다.
+// done: 그릴 끝난 단계 수(최근에 끝난 것부터).
+type Fit = { todo: number; done: number; gaps: boolean; end: boolean; one?: boolean; grow?: boolean }
 const FITS: readonly Fit[] = [
-  { todo: 3, recent: true, gaps: true, end: true },
-  { todo: 2, recent: true, gaps: true, end: true },
-  { todo: 1, recent: true, gaps: true, end: true },
-  { todo: 1, recent: false, gaps: true, end: true },
-  { todo: 0, recent: false, gaps: true, end: true },
-  { todo: 0, recent: false, gaps: true, end: false },
-  { todo: 0, recent: false, gaps: false, end: false },
-  { todo: 0, recent: false, gaps: false, end: false, one: true },
+  { todo: 3, done: 1, gaps: true, end: true },
+  { todo: 2, done: 1, gaps: true, end: true },
+  { todo: 1, done: 1, gaps: true, end: true },
+  { todo: 1, done: 0, gaps: true, end: true },
+  { todo: 0, done: 0, gaps: true, end: true },
+  { todo: 0, done: 0, gaps: true, end: false },
+  { todo: 0, done: 0, gaps: false, end: false },
+  { todo: 0, done: 0, gaps: false, end: false, one: true },
 ]
+const CALL_ROOM = 2
+
+// 시도할 모양을 넉넉한 것부터: 예정 전부에 끝난 것을 하나씩 줄여 가고, 이어서 예정을 하나씩 줄여 FITS로.
+// 더 넉넉한 모양이 더 짧을 때가 있어(숨은 끝남이 그린 묶음 안에 있을 때) 위에서부터 차례로 잰다.
+function fitsFor(todoN: number, doneN: number): Fit[] {
+  const grow: Fit[] = []
+  for (let d = doneN; d > 1; d--) grow.push({ todo: todoN, done: d, gaps: true, end: true, grow: true })
+  for (let t = todoN; t > 3; t--) grow.push({ todo: t, done: 1, gaps: true, end: true, grow: true })
+  return [...grow, ...FITS]
+}
 // 패널 머리: 제목 1줄 + 막대와 숫자 1줄 + 빈 줄 1줄.
 const HEAD_ROWS = 3
 
@@ -282,9 +295,9 @@ function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreD
   const ids = new Set(ls.filter(s => s.status === 'doing' || s.status === 'blocked').map(s => s.id))
   const fin = ls.filter(s => isFinal(s.status))
   const todo = ls.filter(s => s.status === 'todo')
-  // 가장 늦게 끝난 것. 끝난 시각이 같으면 순서상 뒤의 것.
-  const last = fin.reduce<Step | undefined>((a, s) => (a && (a.endedAt ?? -1) > (s.endedAt ?? -1) ? a : s), undefined)
-  if (fit.recent && last) ids.add(last.id)
+  // 늦게 끝난 것부터 fit.done개. 끝난 시각이 같으면 순서상 뒤의 것부터.
+  const latest = fin.map((s, i) => ({ s, i })).sort((x, y) => (y.s.endedAt ?? -1) - (x.s.endedAt ?? -1) || y.i - x.i)
+  for (const { s } of latest.slice(0, fit.done)) ids.add(s.id)
   for (const s of todo.slice(0, fit.todo)) ids.add(s.id)
   const end = ls.at(-1)
   if (fit.end && end?.status === 'todo') ids.add(end.id)
@@ -1174,9 +1187,22 @@ export const register: Register = on => {
         return { blocks, rows }
       }
       // 패널에 다 들어가는 첫 모양. 무엇으로도 모자라면 가장 짧은 모양.
-      const tries = FITS.map(layout)
-      const chosen = tries.find(l => l.rows <= e.props.scroll.bodyRows) ?? tries.at(-1)!
-      for (const bl of chosen.blocks) {
+      // 늘린 모양은 명령 줄이 CALL_ROOM보다 적어도 그만큼 있는 것으로 센다. 명령 줄 수는 모양과 상관없다.
+      const callRows = (at ? callLines({ dot: 'subtle' }, hung).length : 0) + (bottom.length ? bottom.length + 1 : 0)
+      const spare = Math.max(0, CALL_ROOM - callRows)
+      const todoN = ls.filter(s => s.status === 'todo').length
+      const nowN = ls.filter(s => isNow(s.status)).length
+      const fits = fitsFor(todoN, done)
+      let chosen: ReturnType<typeof layout> | undefined
+      for (const [i, fit] of fits.entries()) {
+        const extra = fit.grow ? spare : 0
+        // 그릴 단계마다 한 줄은 드니, 그것만으로 넘치는 모양은 그려 보지 않는다. 마지막 모양은 늘 그린다.
+        const least = HEAD_ROWS + nowN + Math.min(fit.todo, todoN) + Math.min(fit.done, done) + callRows + extra
+        if (least > e.props.scroll.bodyRows && i < fits.length - 1) continue
+        chosen = layout(fit)
+        if (chosen.rows + extra <= e.props.scroll.bodyRows) break
+      }
+      for (const bl of chosen!.blocks) {
         body.push(
           <Box key={bl.id} flexDirection="column">
             {bl.lines}
