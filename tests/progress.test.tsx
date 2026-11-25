@@ -2043,6 +2043,24 @@ test('a search over "." or a drive shows the glob instead, or nothing', async ($
   await Promise.all(calls)
 })
 
+test('a search whose path ends in .. shows the glob', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Grep')
+  await $.session.start(START)
+  const call = $.tool.call({ tool: 'Grep', pattern: 'baz', path: 'C:/Users/me/..', glob: '*.md' } as unknown as CallInput)
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    const lines = (await ui.findAll({ type: 'Text', text: /^┆ / })).map(l => l.text)
+    expect(lines).toEqual(['┆ ▶ 검색 "baz" · *.md'])
+    await ui.unmount()
+  }
+  await w.clock.advance(5 * SEC)
+  await call
+})
+
 test('the arrow of a command under a step takes the step color', async ($, on) => {
   const w = world(on)
   slow(on, w, 'Bash')
