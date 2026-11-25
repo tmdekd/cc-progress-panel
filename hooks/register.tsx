@@ -220,7 +220,8 @@ function totalTime(ls: Step[], t: number): string {
 // 짧게 보기(사용자가 정함, 2026-11-19): 진행 중·막힘은 늘 모두, 끝난 것은 가장 최근에 끝난 1개,
 // 예정은 앞에서 3개까지. 패널 높이에 안 들어가면 FITS 의 다음 모양으로 줄여 스크롤이 생기지 않게 한다.
 // 끝 단계(2026-11-24): 마지막 단계가 예정이면 일이 어디서 끝나는지 보이게 늘 그린다(end). 거의 마지막 모양에서만 뺀다.
-type Fit = { todo: number; recent: boolean; gaps: boolean; end: boolean }
+// 하나로(one, 2026-11-25): 숨긴 예정은 자리마다 개수를 적지만, 무엇으로도 모자라면 끝으로 개수 줄 하나로 합친다.
+type Fit = { todo: number; recent: boolean; gaps: boolean; end: boolean; one?: boolean }
 const FITS: readonly Fit[] = [
   { todo: 3, recent: true, gaps: true, end: true },
   { todo: 2, recent: true, gaps: true, end: true },
@@ -229,17 +230,18 @@ const FITS: readonly Fit[] = [
   { todo: 0, recent: false, gaps: true, end: true },
   { todo: 0, recent: false, gaps: true, end: false },
   { todo: 0, recent: false, gaps: false, end: false },
+  { todo: 0, recent: false, gaps: false, end: false, one: true },
 ]
 // 패널 머리: 제목 1줄 + 막대와 숫자 1줄 + 빈 줄 1줄.
 const HEAD_ROWS = 3
 
 // 그릴 차례: 보이는 단계·묶음, 그리고 숨긴 예정이 이어진 덩어리(more). 덩어리마다 그 자리에 개수를 적는다
 // (사용자가 고름, 2026-11-25). 보이는 아래 단계가 없는 묶음은 그리지 않으므로 그 안의 숨긴 예정은 맨 위 덩어리에 든다.
-// 숨긴 끝남은 맨 위 "완료 n개 더"에 들므로 덩어리를 끊지 않는다.
+// 숨긴 끝남은 맨 위 "완료 n개 더"에 들므로 덩어리를 끊지 않는다. one이면 숨긴 예정을 모두 맨 끝 덩어리 하나에 모은다.
 type KidSlot = { kind: 'step'; step: Step } | { kind: 'more'; steps: Step[] }
 type Slot = KidSlot | { kind: 'group'; step: Step; kids: KidSlot[] }
 
-function slots(steps: readonly Step[], ids: Set<string>): Slot[] {
+function slots(steps: readonly Step[], ids: Set<string>, one = false): Slot[] {
   const out: Slot[] = []
   let run: Step[] = []
   const flush = () => {
@@ -250,7 +252,7 @@ function slots(steps: readonly Step[], ids: Set<string>): Slot[] {
     const kids = s.children ?? []
     if (!kids.length) {
       if (ids.has(s.id)) {
-        flush()
+        if (!one) flush()
         out.push({ kind: 'step', step: s })
       } else if (s.status === 'todo') run.push(s)
       continue
@@ -259,7 +261,7 @@ function slots(steps: readonly Step[], ids: Set<string>): Slot[] {
       run.push(...kids.filter(c => c.status === 'todo'))
       continue
     }
-    flush()
+    if (!one) flush()
     const inner: KidSlot[] = []
     let hid: Step[] = []
     for (const c of kids) {
@@ -267,7 +269,7 @@ function slots(steps: readonly Step[], ids: Set<string>): Slot[] {
         if (hid.length) inner.push({ kind: 'more', steps: hid })
         hid = []
         inner.push({ kind: 'step', step: c })
-      } else if (c.status === 'todo') hid.push(c)
+      } else if (c.status === 'todo') (one ? run : hid).push(c)
     }
     if (hid.length) inner.push({ kind: 'more', steps: hid })
     out.push({ kind: 'group', step: s, kids: inner })
@@ -289,11 +291,11 @@ function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreD
   // 숨는 것이 딱 1개이고 맨 위 단계이며 메모가 없으면 "1개 더" 대신 그 단계를 그린다. 줄 수가 같다.
   // 끝남은 숨는 것 전체로, 예정은 숨은 자리(덩어리)마다 본다.
   const top = new Set(steps.map(s => s.id))
-  const one = (hidden: Step[]) => {
+  const single = (hidden: Step[]) => {
     if (hidden.length === 1 && top.has(hidden[0]!.id) && !hidden[0]!.note) ids.add(hidden[0]!.id)
   }
-  one(fin.filter(s => !ids.has(s.id)))
-  for (const sl of slots(steps, ids)) if (sl.kind === 'more') one(sl.steps)
+  single(fin.filter(s => !ids.has(s.id)))
+  for (const sl of slots(steps, ids, fit.one)) if (sl.kind === 'more') single(sl.steps)
   return { ids, moreDone: fin.filter(s => !ids.has(s.id)).length }
 }
 
@@ -1107,7 +1109,7 @@ export const register: Register = on => {
         const order: { id: string; status: StepStatus; slot?: Slot }[] = []
         if (moreDone) order.push({ id: 'more-done', status: 'done' })
         let more = 0
-        for (const sl of slots(b.steps, ids)) {
+        for (const sl of slots(b.steps, ids, fit.one)) {
           if (sl.kind === 'more') order.push({ id: `more-todo-${more++}`, status: 'todo', slot: sl })
           else order.push({ id: `step-${sl.step.id}`, status: shown(sl.step).status, slot: sl })
         }

@@ -2424,6 +2424,46 @@ test('finished steps do not split a run of hidden steps', async ($, on) => {
   }
 })
 
+// 자리마다 개수 줄을 두면 줄이 늘 수 있다. 무엇으로도 모자라면 끝으로 숨긴 예정을 개수 줄 하나로 합쳐 넘치지 않게 한다.
+test('the shortest shape puts all hidden steps in one count so nothing scrolls', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(tool(SKIP))
+  await $.tool.call(tool({ action: 'update', id: 'p5', status: 'doing' }))
+
+  // 5줄: 머리 3 + 개발·개수 2.
+  let ui = await $.ui.mount(pane('terminal', 40, 5))
+  await expectRows(ui, [/^◉ 개발/, /^┆ 예정 7개 더$/])
+  await ui.unmount()
+
+  // 묶음 안의 숨긴 예정도 하나로 합친다. 6줄: 머리 3 + G·t5·개수 3.
+  // 합친 개수는 맨 위 줄이라 묶음이 목록 끝이 아니므로 가지는 ├─ 이다.
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '묶음 안',
+      steps: [
+        {
+          id: 'g',
+          label: 'G',
+          children: [
+            { id: 't1', label: 't1' },
+            { id: 't2', label: 't2' },
+            { id: 't3', label: 't3' },
+            { id: 't4', label: 't4' },
+            { id: 't5', label: 't5' },
+            { id: 't6', label: 't6' },
+          ],
+        },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 't5', status: 'doing' }))
+  ui = await $.ui.mount(pane('terminal', 40, 6))
+  await expectRows(ui, [/^◉ G/, /^├─◉ t5/, /^┆ 예정 5개 더$/])
+  await ui.unmount()
+})
+
 test('when the final step is dropped the count closes the rail of the last group', async ($, on) => {
   world(on)
   await $.session.start(START)
