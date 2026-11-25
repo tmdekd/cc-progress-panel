@@ -347,7 +347,9 @@ function plain(text: string): string {
       after = false
       continue
     }
-    if (after && /[0-9A-Za-z]$/.test(out) && /^[0-9A-Za-z]/.test(n)) out += ','
+    // 바꾼 번호끼리(④⑤ → 4,5), 또는 보통 숫자 바로 뒤의 번호(Task 1① → Task 1,1)는 쉼표로 나눠 다른 수로 읽히지 않게 한다.
+    const sep = after ? /[0-9A-Za-z]$/.test(out) && /^[0-9A-Za-z]/.test(n) : /[0-9]$/.test(out) && /^[0-9]/.test(n)
+    if (sep) out += ','
     out += n
     after = true
   }
