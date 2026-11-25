@@ -288,14 +288,28 @@ function compact(ls: Step[], fit: Fit, steps: Step[]): { ids: Set<string>; moreD
   for (const s of todo.slice(0, fit.todo)) ids.add(s.id)
   const end = ls.at(-1)
   if (fit.end && end?.status === 'todo') ids.add(end.id)
-  // 숨는 것이 딱 1개이고 맨 위 단계이며 메모가 없으면 "1개 더" 대신 그 단계를 그린다. 줄 수가 같다.
-  // 끝남은 숨는 것 전체로, 예정은 숨은 자리(덩어리)마다 본다.
+  // 숨는 것이 딱 1개이고 메모가 없으면 "1개 더" 대신 그 단계를 그린다. 줄 수가 같을 때만이다.
+  // 끝남은 숨는 것 전체로 보고 맨 위 단계만. 그리면 숨긴 예정 덩어리가 나뉘어 줄이 늘면 개수로 둔다(2026-11-25 사용자가 고름).
+  // 예정은 숨은 자리(덩어리)마다 본다. 이미 그리는 묶음 안의 덩어리는 묶음 머리가 있으니 그 안 단계도 그린다.
+  // 맨 위 덩어리는 맨 위 단계만(그리지 않는 묶음의 단계를 그리면 묶음 머리 줄이 는다).
   const top = new Set(steps.map(s => s.id))
-  const single = (hidden: Step[]) => {
-    if (hidden.length === 1 && top.has(hidden[0]!.id) && !hidden[0]!.note) ids.add(hidden[0]!.id)
+  const lone = (hidden: Step[]) => (hidden.length === 1 && !hidden[0]!.note ? hidden[0] : undefined)
+  const runs = (drawn: Set<string>) =>
+    slots(steps, drawn, fit.one).reduce(
+      (n, sl) => n + (sl.kind === 'more' ? 1 : sl.kind === 'group' ? sl.kids.filter(k => k.kind === 'more').length : 0),
+      0,
+    )
+  const f = lone(fin.filter(s => !ids.has(s.id)))
+  if (f && top.has(f.id) && runs(new Set([...ids, f.id])) === runs(ids)) ids.add(f.id)
+  for (const sl of slots(steps, ids, fit.one)) {
+    const s = sl.kind === 'more' ? lone(sl.steps) : undefined
+    if (s && top.has(s.id)) ids.add(s.id)
+    if (sl.kind !== 'group') continue
+    for (const k of sl.kids) {
+      const c = k.kind === 'more' ? lone(k.steps) : undefined
+      if (c) ids.add(c.id)
+    }
   }
-  single(fin.filter(s => !ids.has(s.id)))
-  for (const sl of slots(steps, ids, fit.one)) if (sl.kind === 'more') single(sl.steps)
   return { ids, moreDone: fin.filter(s => !ids.has(s.id)).length }
 }
 
@@ -345,6 +359,8 @@ function plain(text: string): string {
   for (const ch of text) {
     const n = numeral(ch.codePointAt(0) ?? 0)
     if (n === undefined) {
+      // 바꾼 번호 바로 뒤의 보통 숫자도 쉼표로 나눈다(그림 ③4 → 그림 3,4).
+      if (after && /[0-9]$/.test(out) && /[0-9]/.test(ch)) out += ','
       out += ch
       after = false
       continue

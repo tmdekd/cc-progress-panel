@@ -1735,6 +1735,30 @@ test('a circled number right after a digit is set off with a comma', async ($, o
   }
 })
 
+// 반대 방향도: 원문자 바로 뒤의 보통 숫자는 쉼표로 나눈다(그림 ③4 → 그림 3,4). 영문자는 붙인다.
+test('a plain digit right after a circled number is set off with a comma', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '원문자 뒤 숫자',
+      steps: [
+        { id: 'a', label: '그림 ③4 보기' },
+        { id: 'b', label: '①②3 비교' },
+        { id: 'c', label: '③a 확인' },
+        { id: 'd', label: '장 ④ 5절' },
+      ],
+    }),
+  )
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    expect(await texts(ui, /^○ 그림 3,4 보기$/, /^○ 1,2,3 비교$/, /^○ 3a 확인$/, /^○ 장 4 5절$/)).toEqual([true, true, true, true])
+    await ui.unmount()
+  }
+})
+
 // 맨 앞에서 빈칸이 뒤따르는 번호 하나는 목록 번호로 읽히게 점을 붙인다(❶ 자료 → 1. 자료). 중간 번호, 붙은 번호, 빈칸 없는 번호는 숫자만 남긴다.
 test('a lone number at the start followed by a space becomes a list mark like 1.', async ($, on) => {
   world(on)
@@ -1883,10 +1907,11 @@ test('the final step stays in view even when it sits in a group', async ($, on) 
   )
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
 
-  // 예정 3개 16줄, 2개 14줄, 1개 12줄, 0개 10줄. 10줄이면 0개: 준비, 예정 4개 더, 발표, 묶음 안 예정 1개 더, 리허설.
+  // 예정 3개 16줄, 2개 14줄, 1개 12줄, 0개 10줄. 10줄이면 0개: 준비, 예정 4개 더, 발표, 슬라이드, 리허설.
+  // 묶음 안에서 혼자 숨는 슬라이드는 개수 대신 이름으로 그린다(줄 수가 같다).
   const ui = await $.ui.mount(pane('terminal', 40, 10))
-  await expectRows(ui, [/^◉ 준비/, /^┆ 예정 4개 더$/, /^○ 발표$/, /^│ ┆ 예정 1개 더$/, /^└─○ 리허설$/])
-  expect(await texts(ui, /자료 조사/, /슬라이드/)).toEqual([false, false])
+  await expectRows(ui, [/^◉ 준비/, /^┆ 예정 4개 더$/, /^○ 발표$/, /^├─○ 슬라이드$/, /^└─○ 리허설$/])
+  expect(await texts(ui, /자료 조사/)).toEqual([false])
   await ui.unmount()
 })
 
@@ -2016,6 +2041,24 @@ test('a search over "." or a drive shows the glob instead, or nothing', async ($
   }
   await w.clock.advance(5 * SEC)
   await Promise.all(calls)
+})
+
+test('a search whose path ends in .. shows the glob', async ($, on) => {
+  const w = world(on)
+  slow(on, w, 'Grep')
+  await $.session.start(START)
+  const call = $.tool.call({ tool: 'Grep', pattern: 'baz', path: 'C:/Users/me/..', glob: '*.md' } as unknown as CallInput)
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    const lines = (await ui.findAll({ type: 'Text', text: /^┆ / })).map(l => l.text)
+    expect(lines).toEqual(['┆ ▶ 검색 "baz" · *.md'])
+    await ui.unmount()
+  }
+  await w.clock.advance(5 * SEC)
+  await call
 })
 
 test('the arrow of a command under a step takes the step color', async ($, on) => {
@@ -2174,7 +2217,8 @@ const CHORES = {
   ],
 }
 
-test('with the last group underway the count of hidden steps sits inside it, before the final step', async ($, on) => {
+// 2026-11-25 이후: 묶음 안에서 혼자 숨는 단계는 개수 대신 이름으로 그린다. 여기선 보고서가 그 단계다.
+test('with the last group underway its hidden step stays inside it, before the final step', async ($, on) => {
   world(on)
   await $.session.start(START)
   await $.tool.call(tool(CHORES))
@@ -2184,7 +2228,7 @@ test('with the last group underway the count of hidden steps sits inside it, bef
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(pane(surface, 40, 40))
     const rows = await railRows(ui)
-    const want = [/^● 준비/, /^◉ 마무리/, /^├─◉ 청소/, /^├─○ 분리수거$/, /^├─○ 설거지$/, /^├─○ 빨래$/, /^│ ┆ 예정 1개 더$/, /^└─○ 보고$/]
+    const want = [/^● 준비/, /^◉ 마무리/, /^├─◉ 청소/, /^├─○ 분리수거$/, /^├─○ 설거지$/, /^├─○ 빨래$/, /^├─○ 보고서$/, /^└─○ 보고$/]
     expect(rows.length).toBe(want.length)
     want.forEach((re, i) => expect(rows[i]).toMatch(re))
     // 지나온 곳(준비→마무리)은 초록, 지금 묶음의 가지와 예정 줄의 세로선은 진행 색.
@@ -2347,7 +2391,7 @@ test('hidden steps before a group stay above it', async ($, on) => {
   }
 })
 
-test('a hidden step inside a group is counted between its neighbours', async ($, on) => {
+test('hidden steps inside a group are counted between their neighbours', async ($, on) => {
   world(on)
   await $.session.start(START)
   await $.tool.call(
@@ -2365,16 +2409,18 @@ test('a hidden step inside a group is counted between its neighbours', async ($,
             { id: 't4', label: 't4' },
             { id: 't5', label: 't5' },
             { id: 't6', label: 't6' },
+            { id: 't7', label: 't7' },
           ],
         },
       ],
     }),
   )
-  await $.tool.call(tool({ action: 'update', id: 't5', status: 'doing' }))
+  await $.tool.call(tool({ action: 'update', id: 't6', status: 'doing' }))
 
+  // 숨는 것은 t4·t5 둘. 혼자가 아니라 개수로 둘 사이에 적는다.
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(pane(surface, 40, 40))
-    await expectRows(ui, [/^◉ G/, /^├─○ t1$/, /^├─○ t2$/, /^├─○ t3$/, /^│ ┆ 예정 1개 더$/, /^├─◉ t5/, /^└─○ t6$/])
+    await expectRows(ui, [/^◉ G/, /^├─○ t1$/, /^├─○ t2$/, /^├─○ t3$/, /^│ ┆ 예정 2개 더$/, /^├─◉ t6/, /^└─○ t7$/])
     await ui.unmount()
   }
 })
@@ -2476,6 +2522,219 @@ test('when the final step is dropped the count closes the rail of the last group
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(pane(surface, 40, 8))
     await expectRows(ui, [/^● 준비/, /^◉ 마무리/, /^└─◉ 청소/, /^  ┆ 예정 5개 더$/])
+    await ui.unmount()
+  }
+})
+
+// ── 2026-11-25 검토에서 미룬 것: "개수 대신 그 단계"는 줄 수가 같을 때만 ──────────────
+
+test('a lone finished step that would split the hidden steps is counted instead', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '책 만들기',
+      steps: [
+        { id: 'p', label: '준비' },
+        { id: 'a', label: '자료' },
+        { id: 'b', label: '목차' },
+        { id: 'c', label: '초안' },
+        { id: 'd', label: '본문' },
+        { id: 'e1', label: '표1' },
+        { id: 'e2', label: '표2' },
+        { id: 'f', label: '그림' },
+        { id: 'g1', label: '부록1' },
+        { id: 'g2', label: '부록2' },
+        { id: 'h', label: '인쇄' },
+      ],
+    }),
+  )
+  // 그림을 먼저, 준비를 나중에 끝낸다. 숨는 끝난 단계는 그림 하나지만, 그리면 표1·표2와 부록1·부록2가 나뉘어 2줄 는다.
+  await $.tool.call(tool({ action: 'update', id: 'f', status: 'done' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'p', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'd', status: 'doing' }))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    await expectRows(ui, [/^┆ 완료 1개 더$/, /^● 준비/, /^○ 자료$/, /^○ 목차$/, /^○ 초안$/, /^◉ 본문/, /^┆ 예정 4개 더$/, /^○ 인쇄$/])
+    await ui.unmount()
+  }
+})
+
+// 2026-11-25 검토에서 메운 빈칸: 그리면 줄이 느는 경우(그리지 않는 묶음의 단계)는 개수로 남고, 경계에서는 그린다.
+
+test('a lone hidden step of a group not drawn stays a count', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '안 그리는 묶음',
+      steps: [
+        { id: 'a', label: '준비' },
+        { id: 'b', label: 'b' },
+        { id: 'c', label: 'c' },
+        { id: 'd', label: 'd' },
+        { id: 'g', label: '발표', children: [{ id: 'g1', label: '슬라이드' }] },
+        { id: 'e', label: '뒷정리' },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+
+  // 슬라이드를 그리면 발표 머리 줄까지 1줄이 는다.
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    await expectRows(ui, [/^◉ 준비/, /^○ b$/, /^○ c$/, /^○ d$/, /^┆ 예정 1개 더$/, /^○ 뒷정리$/])
+    await ui.unmount()
+  }
+})
+
+test('a lone finished step of a group not drawn stays a count', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '안 그리는 묶음 끝남',
+      steps: [
+        { id: 'g', label: '조사', children: [{ id: 'g1', label: '자료' }] },
+        { id: 'a', label: '준비' },
+        { id: 'b', label: 'b' },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'g1', status: 'done' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'b', status: 'doing' }))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    await expectRows(ui, [/^┆ 완료 1개 더$/, /^● 준비/, /^◉ b/])
+    await ui.unmount()
+  }
+})
+
+test('a lone finished step right before a drawn group splits nothing and is drawn', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '앞 묶음',
+      steps: [
+        { id: 'y', label: 'y' },
+        { id: 'a', label: 'a' },
+        { id: 'b', label: 'b' },
+        { id: 'c', label: 'c' },
+        { id: 'd', label: 'd' },
+        { id: 'e', label: 'e' },
+        { id: 'f', label: 'f' },
+        { id: 'g', label: 'G', children: [{ id: 'g1', label: 'g1' }, { id: 'g2', label: 'g2' }] },
+        { id: 'z', label: 'z' },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'f', status: 'done' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'y', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await $.tool.call(tool({ action: 'update', id: 'g1', status: 'blocked' }))
+
+  // f 앞은 숨긴 e, 뒤는 보이는 묶음 G라 덩어리가 나뉘지 않는다. e는 혼자 숨어 이름으로 그린다.
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    await expectRows(ui, [/^● y/, /^◉ a/, /^○ b$/, /^○ c$/, /^○ d$/, /^○ e$/, /^● f/, /^▲ G/, /^├─▲ g1/, /^├─○ g2$/, /^○ z$/])
+    await ui.unmount()
+  }
+})
+
+test('a lone hidden step at the end of the last group takes the closing branch', async ($, on) => {
+  const w = world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '끝 묶음',
+      steps: [
+        { id: 'a', label: '준비' },
+        {
+          id: 'g',
+          label: '마무리',
+          children: [
+            { id: 'g1', label: 'g1' },
+            { id: 'g2', label: 'g2' },
+            { id: 'g3', label: 'g3' },
+            { id: 'g4', label: 'g4' },
+            { id: 'g5', label: 'g5' },
+            { id: 'g6', label: 'g6' },
+          ],
+        },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'g6', status: 'done' }))
+  await w.clock.advance(1 * MIN)
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'done' }))
+  await $.tool.call(tool({ action: 'update', id: 'g1', status: 'doing' }))
+
+  // 끝 단계 g6이 끝나 숨고, 묶음 안 마지막 덩어리 g5 하나가 이름으로 그려지며 └─를 받는다.
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    await expectRows(ui, [/^┆ 완료 1개 더$/, /^● 준비/, /^◉ 마무리/, /^├─◉ g1/, /^├─○ g2$/, /^├─○ g3$/, /^├─○ g4$/, /^└─○ g5$/])
+    await ui.unmount()
+  }
+})
+
+test('a lone hidden step inside a shown group is drawn instead of counted', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '보고서 쓰기',
+      steps: [
+        {
+          id: 'g',
+          label: '조사',
+          children: [
+            { id: 'g1', label: '자료 찾기' },
+            { id: 'g2', label: '읽기' },
+            { id: 'g3', label: '요약' },
+            { id: 'g4', label: '비교' },
+            { id: 'g5', label: '정리' },
+          ],
+        },
+        {
+          id: 'h',
+          label: '작성',
+          children: [
+            { id: 'h1', label: '초안' },
+            { id: 'h2', label: '퇴고' },
+          ],
+        },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'g1', status: 'doing' }))
+
+  // 정리와 초안은 각자 묶음 안에서 혼자 숨는다. 묶음 머리가 이미 있으니 이름으로 그려도 줄 수가 같다.
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface, 40, 40))
+    await expectRows(ui, [
+      /^◉ 조사/,
+      /^├─◉ 자료 찾기/,
+      /^├─○ 읽기$/,
+      /^├─○ 요약$/,
+      /^├─○ 비교$/,
+      /^├─○ 정리$/,
+      /^○ 작성$/,
+      /^├─○ 초안$/,
+      /^└─○ 퇴고$/,
+    ])
     await ui.unmount()
   }
 })
