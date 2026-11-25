@@ -1191,10 +1191,16 @@ export const register: Register = on => {
       const callRows = (at ? callLines({ dot: 'subtle' }, hung).length : 0) + (bottom.length ? bottom.length + 1 : 0)
       const spare = Math.max(0, CALL_ROOM - callRows)
       const todoN = ls.filter(s => s.status === 'todo').length
+      const nowN = ls.filter(s => isNow(s.status)).length
+      const fits = fitsFor(todoN, done)
       let chosen: ReturnType<typeof layout> | undefined
-      for (const fit of fitsFor(todoN, done)) {
+      for (const [i, fit] of fits.entries()) {
+        const extra = fit.grow ? spare : 0
+        // 그릴 단계마다 한 줄은 드니, 그것만으로 넘치는 모양은 그려 보지 않는다. 마지막 모양은 늘 그린다.
+        const least = HEAD_ROWS + nowN + Math.min(fit.todo, todoN) + Math.min(fit.done, done) + callRows + extra
+        if (least > e.props.scroll.bodyRows && i < fits.length - 1) continue
         chosen = layout(fit)
-        if (chosen.rows + (fit.grow ? spare : 0) <= e.props.scroll.bodyRows) break
+        if (chosen.rows + extra <= e.props.scroll.bodyRows) break
       }
       for (const bl of chosen!.blocks) {
         body.push(
