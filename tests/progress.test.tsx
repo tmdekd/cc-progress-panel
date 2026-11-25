@@ -1689,7 +1689,7 @@ test('circled numbers are drawn as plain digits so they do not overlap', async (
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(pane(surface))
     expect(
-      await texts(ui, /^◉ 넘겨주기\(그림 3\)/, /^○ 도구와 인자\(그림 4,5\)$/, /^○ IV장$/, /^○ ㅋㅋ 메모$/, /^┆ 1 확인$/, /^그림 3 정리$/),
+      await texts(ui, /^◉ 넘겨주기\(그림 3\)/, /^○ 도구와 인자\(그림 4,5\)$/, /^○ IV장$/, /^○ ㅋㅋ 메모$/, /^┆ 1\. 확인$/, /^그림 3 정리$/),
     ).toEqual([true, true, true, true, true, true])
     expect(await ui.find({ type: 'Text', text: /[③④⑤❶Ⅳ]/ })).toBeUndefined()
     await ui.unmount()
@@ -1704,6 +1704,62 @@ test('the box above the prompt also draws circled numbers as digits', async ($, 
 
   const b = await $.ui.mount(band('terminal'))
   expect(await b.find({ type: 'Text', text: /^⚠ 넘겨주기\(그림 3\)에서 막힘: 그림 5 없음$/ })).toBeDefined()
+  await b.unmount()
+})
+
+// 맨 앞에서 빈칸이 뒤따르는 번호 하나는 목록 번호로 읽히게 점을 붙인다(❶ 자료 → 1. 자료). 중간 번호, 붙은 번호, 빈칸 없는 번호는 숫자만 남긴다.
+test('a lone number at the start followed by a space becomes a list mark like 1.', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '① 자료 정리',
+      steps: [
+        { id: 'a', label: '❶ 자료 12장 모음' },
+        { id: 'b', label: '⑫ 마무리' },
+        { id: 'c', label: '④⑤ 비교' },
+        { id: 'd', label: '③번 확인' },
+        { id: 'g', label: '그림 ③ 보기' },
+      ],
+    }),
+  )
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing', note: '② 다시 확인' }))
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    expect(
+      await texts(
+        ui,
+        /^1\. 자료 정리$/,
+        /^◉ 1\. 자료 12장 모음/,
+        /^┆ 2\. 다시 확인$/,
+        /^○ 12\. 마무리$/,
+        /^○ 4,5 비교$/,
+        /^○ 3번 확인$/,
+        /^○ 그림 3 보기$/,
+      ),
+    ).toEqual([true, true, true, true, true, true, true])
+    await ui.unmount()
+  }
+
+  // 대기 단계는 3개까지만 보이므로 나머지는 새 목록으로 본다.
+  await $.tool.call(tool({ action: 'plan', title: '준비', steps: [{ id: 'e', label: '⑴ 준비' }, { id: 'f', label: 'Ⓐ 안' }] }))
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    expect(await texts(ui, /^○ \(1\) 준비$/, /^○ A\. 안$/)).toEqual([true, true])
+    await ui.unmount()
+  }
+})
+
+test('the box above the prompt also shows a leading number as a list mark', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(tool({ action: 'plan', title: '자료', steps: [{ id: 'a', label: '❶ 자료 모음' }] }))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'blocked', note: '⑤ 없음' }))
+
+  const b = await $.ui.mount(band('terminal'))
+  expect(await b.find({ type: 'Text', text: /^⚠ 1\. 자료 모음에서 막힘: 5\. 없음$/ })).toBeDefined()
   await b.unmount()
 })
 
