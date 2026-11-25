@@ -672,6 +672,18 @@ async function prune($: EngineInterface, own: string): Promise<void> {
   for (const { key } of dated.slice(0, keys.length - (KEEP - 1))) await $.store.delete(key)
 }
 
+// 그리는 훅이 기다리는 값을 신호가 끊기면 놓고 바로 끝낸다. 컴퓨터가 몹시 느리면 $ 호출이 30초 한도를 넘겨
+// 엔진이 그리기를 건너뛰는데, 그 뒤에도 훅이 5초 넘게 남아 있으면 '신호를 무시했다'고 센다. 2번 이어지면
+// hooks worker를 갈아 그때 돌던 도구 호출이 실패한다(2026-11-24, Read가 "ignored its signal 2 times"로 실패).
+function orStop<T>(signal: AbortSignal, p: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason)
+    const stop = () => reject(signal.reason)
+    signal.addEventListener('abort', stop, { once: true })
+    p.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop))
+  })
+}
+
 // ── 훅 ────────────────────────────────────────────────
 
 export const register: Register = on => {
@@ -886,11 +898,9 @@ export const register: Register = on => {
     return { text: '진행 상황 패널을 열었습니다.' }
   })
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     const { Box, Text } = $.ui.resolve(e)
-    const b = await read($, board)
-    const calls = await read($, running)
-    const t = await read($, now)
+    const [b, calls, t] = await orStop(next.signal, Promise.all([read($, board), read($, running), read($, now)]))
     // 단계 시간은 일한 시각으로, 돌고 있는 명령은 벽시계로.
     const w = workTime(b, t)
     const cols = Math.max(16, e.props.bodyColumns)
@@ -1118,8 +1128,8 @@ export const register: Register = on => {
   // 입력창 바로 위 띠: 5초 안에 생긴 알림을 색 테두리 상자 하나에 한 줄씩, 새것을 아래에.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const t = await read($, now)
-    const live = (await read($, alerts)).filter(a => t - a.at < ALERT_MS)
+    const [t, all] = await orStop(next.signal, Promise.all([read($, now), read($, alerts)]))
+    const live = all.filter(a => t - a.at < ALERT_MS)
     if (live.length === 0) return next(e)
 
     const { Box, Text } = $.ui.resolve(e)
