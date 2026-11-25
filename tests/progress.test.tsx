@@ -1987,6 +1987,37 @@ test('a read shows its folder, file and line range, a search its pattern and sco
   await Promise.all(calls)
 })
 
+// 경로가 . ~ .. 드라이브뿐이면 범위로 뜻이 없으므로 없는 것으로 본다. 검색은 glob, 그다음 type을 범위로 보인다(2026-11-25).
+test('a search over "." or a drive shows the glob instead, or nothing', async ($, on) => {
+  const w = world(on)
+  for (const name of ['Read', 'Grep', 'Glob']) slow(on, w, name)
+  await $.session.start(START)
+  const calls = [
+    $.tool.call({ tool: 'Grep', pattern: 'foo', path: '.', glob: '*.ts' } as unknown as CallInput),
+    $.tool.call({ tool: 'Glob', pattern: '**/*.tsx', path: 'C:\\' } as unknown as CallInput),
+    $.tool.call({ tool: 'Glob', pattern: '*.md', path: './web/.' } as unknown as CallInput),
+    $.tool.call({ tool: 'Grep', pattern: 'bar', path: '~', type: 'py' } as unknown as CallInput),
+    $.tool.call({ tool: 'Read', file_path: './notes.md' } as unknown as CallInput),
+  ]
+  await w.clock.settle()
+  await w.clock.advance(2500)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    const lines = (await ui.findAll({ type: 'Text', text: /^┆ / })).map(l => l.text)
+    expect(lines).toEqual([
+      '┆ ▶ 검색 "foo" · *.ts',
+      '┆ ▶ 찾기 **/*.tsx',
+      '┆ ▶ 찾기 *.md · web',
+      '┆ ▶ 검색 "bar" · py',
+      '┆ ▶ 읽기 notes.md',
+    ])
+    await ui.unmount()
+  }
+  await w.clock.advance(5 * SEC)
+  await Promise.all(calls)
+})
+
 test('the arrow of a command under a step takes the step color', async ($, on) => {
   const w = world(on)
   slow(on, w, 'Bash')

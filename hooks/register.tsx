@@ -428,10 +428,15 @@ function labelOf(e: { tool: string }): Label {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
   // "- Read"만으로는 무엇을 보는지 모른다. 종류와 대상(폴더/파일, 찾는 말과 범위, 주소)을 함께 보인다.
   const of = (kind: string, target: string): Label => (target ? { label: `${kind} ${target}`, kind, target } : { label: kind })
-  const parts = (key: string) => str(args[key]).split(/[\\/]+/).filter(Boolean)
+  const parts = (key: string) => str(args[key]).split(/[\\/]+/).filter(p => p && p !== '.')
   // 경로는 마지막 두 마디(폴더/파일)만. 같은 이름의 파일이 여러 폴더에 있어도 구분된다.
   const file = (key: string) => parts(key).slice(-2).join('/')
   const where = (s: string) => (s ? ` · ${s}` : '')
+  // 검색·찾기 범위는 경로의 끝 이름. .. ~ 드라이브(C:)뿐이면 범위로 뜻이 없으므로 없는 것으로 본다.
+  const scopeOf = (key: string) => {
+    const last = parts(key).at(-1)
+    return last && !/^(\.\.|~|[A-Za-z]:)$/.test(last) ? last : undefined
+  }
   // 명령은 Claude가 붙인 짧은 설명을 쓴다. 명령 첫 줄은 경로 때문에 잘려 무엇을 하는지 안 보인다.
   if (e.tool === 'Bash' || e.tool === 'PowerShell') {
     return { label: firstLine(str(args.description)) || shortCommand(str(args.command)) || e.tool }
@@ -451,12 +456,12 @@ function labelOf(e: { tool: string }): Label {
   if (e.tool === 'Grep') {
     // 범위: 경로가 있으면 그 끝 이름, 없으면 glob, 그것도 없으면 type.
     const pattern = firstLine(str(args.pattern))
-    const scope = parts('path').at(-1) ?? (firstLine(str(args.glob)) || firstLine(str(args.type)))
+    const scope = scopeOf('path') ?? (firstLine(str(args.glob)) || firstLine(str(args.type)))
     return of('검색', pattern && `"${pattern}"${where(scope)}`)
   }
   if (e.tool === 'Glob') {
     const pattern = firstLine(str(args.pattern))
-    return of('찾기', pattern && `${pattern}${where(parts('path').at(-1) ?? '')}`)
+    return of('찾기', pattern && `${pattern}${where(scopeOf('path') ?? '')}`)
   }
   if (e.tool === 'WebSearch') return of('웹 검색', str(args.query) && `"${firstLine(str(args.query))}"`)
   if (e.tool === 'WebFetch') return of('웹 페이지', /^[a-z]+:\/\/([^/?#]+)/i.exec(str(args.url))?.[1] ?? '')
