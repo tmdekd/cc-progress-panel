@@ -359,6 +359,8 @@ function plain(text: string): string {
   for (const ch of text) {
     const n = numeral(ch.codePointAt(0) ?? 0)
     if (n === undefined) {
+      // 바꾼 번호 바로 뒤의 보통 숫자도 쉼표로 나눈다(그림 ③4 → 그림 3,4).
+      if (after && /[0-9]$/.test(out) && /[0-9]/.test(ch)) out += ','
       out += ch
       after = false
       continue

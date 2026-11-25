@@ -1735,6 +1735,30 @@ test('a circled number right after a digit is set off with a comma', async ($, o
   }
 })
 
+// 반대 방향도: 원문자 바로 뒤의 보통 숫자는 쉼표로 나눈다(그림 ③4 → 그림 3,4). 영문자는 붙인다.
+test('a plain digit right after a circled number is set off with a comma', async ($, on) => {
+  world(on)
+  await $.session.start(START)
+  await $.tool.call(
+    tool({
+      action: 'plan',
+      title: '원문자 뒤 숫자',
+      steps: [
+        { id: 'a', label: '그림 ③4 보기' },
+        { id: 'b', label: '①②3 비교' },
+        { id: 'c', label: '③a 확인' },
+        { id: 'd', label: '장 ④ 5절' },
+      ],
+    }),
+  )
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount(pane(surface))
+    expect(await texts(ui, /^○ 그림 3,4 보기$/, /^○ 1,2,3 비교$/, /^○ 3a 확인$/, /^○ 장 4 5절$/)).toEqual([true, true, true, true])
+    await ui.unmount()
+  }
+})
+
 // 맨 앞에서 빈칸이 뒤따르는 번호 하나는 목록 번호로 읽히게 점을 붙인다(❶ 자료 → 1. 자료). 중간 번호, 붙은 번호, 빈칸 없는 번호는 숫자만 남긴다.
 test('a lone number at the start followed by a space becomes a list mark like 1.', async ($, on) => {
   world(on)
