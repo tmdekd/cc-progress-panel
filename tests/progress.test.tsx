@@ -747,7 +747,8 @@ test('a subagent\'s commands are left out', async ($, on) => {
 })
 
 // 백그라운드 명령도 같은 "- 하는 일" 모양이다.
-test('a background command is listed the same way', async ($, on) => {
+// 2026-11-26 사용자가 정함: 패널은 단계만 보이면 되므로 백그라운드 작업은 그리지 않는다(시간 세기에만 쓴다).
+test('a background command is not drawn', async ($, on) => {
   const w = world(on)
   // 백그라운드로 띄운 명령은 바로 돌아오고, 끝은 나중에 알림으로 온다.
   on('tool.call', { tool: 'Bash' }, () => ({ result: { backgroundTaskId: 't1' } }))
@@ -756,9 +757,8 @@ test('a background command is listed the same way', async ($, on) => {
   await w.clock.advance(2 * SEC)
 
   const ui = await $.ui.mount(pane('terminal'))
-  const line = await ui.find({ type: 'Text', text: /도커/ })
-  expect(line?.text).toBe('┆ ▶ 도커 컨테이너 시작')
-  expect(await ui.find({ type: 'Text', text: /백그라운드/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /도커/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Box', key: 'calls' })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1443,7 +1443,7 @@ for (const kind of ['agent', 'command'] as const) {
     let ui = await $.ui.mount(pane('terminal'))
     expect(await ui.find({ type: 'Text', text: /◉ 사진 모으기.*1시간 2분째$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: / 0\/4 · 1시간 2분째$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: kind === 'agent' ? /▶ 에이전트 정의 작성$/ : /▶ 전체 테스트$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /▶ / })).toBeUndefined()
     await ui.unmount()
 
     // 끝 알림으로 열린 턴이 끝나면 돌고 있는 것이 없어 다시 쉰다.
@@ -1476,9 +1476,33 @@ test('time on a question is counted while a background agent runs', async ($, on
   await w.clock.settle()
   await w.clock.advance(10 * MIN)
   await call
+  // 그리지 않는 백그라운드 작업만 남으면 30초마다 다시 그린다. 다음 그리기까지.
+  await w.clock.advance(30 * SEC)
 
+  // 질문 창 동안 쉬었다면 1분째에 머문다.
   const ui = await $.ui.mount(pane('terminal'))
   expect(await ui.find({ type: 'Text', text: /◉ 사진 모으기.*11분째$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+// TaskStop 으로 멈춘 작업은 끝 알림이 오지 않는다(2026-11-26 화면에서 확인). 남아 있으면 시간이 멈추지 않는다.
+test('a background task stopped with TaskStop no longer keeps the time running', async ($, on) => {
+  const w = world(on)
+  on('tool.call', { tool: 'Bash' }, () => ({ result: { backgroundTaskId: 'job1' } }))
+  on('tool.call', { tool: 'TaskStop' } as const, () => ({ result: {} }))
+  await $.session.start(START)
+  await turnStart($)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(2 * MIN)
+  await launchCommand($)
+  await w.clock.advance(1 * MIN)
+  await $.tool.call({ tool: 'TaskStop', task_id: 'job1' } as unknown as CallInput)
+  await turnEnd($)
+  await w.clock.advance(30 * MIN)
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /◉ 사진 모으기 +3분째$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -2271,7 +2295,7 @@ test('the step started last takes the commands even when it comes first in the l
   await Promise.all(calls)
 })
 
-test('a background command stays at the bottom while others hang under the step', async ($, on) => {
+test('a background command is not drawn while others hang under the step', async ($, on) => {
   const w = world(on)
   on('tool.call', { tool: 'Bash' }, async ($$, e) => {
     if ((e as unknown as { run_in_background?: boolean }).run_in_background) return { result: { backgroundTaskId: 't1' } }
@@ -2288,14 +2312,11 @@ test('a background command stays at the bottom while others hang under the step'
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount(pane(surface))
-    const box = await ui.find({ type: 'Box', key: 'calls' })
-    expect(box).toBeDefined()
-    expect(box?.props.marginTop).toBe(1)
+    expect(await ui.find({ type: 'Box', key: 'calls' })).toBeUndefined()
     const rows = await railRows(ui)
     const under = rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1]
     expect(under).toBe('┆ ▶ 테스트 실행')
-    expect(rows.filter(r => r === '┆ ▶ 서버 실행')).toHaveLength(1)
-    expect(rows.at(-1)).toBe('┆ ▶ 서버 실행')
+    expect(rows.filter(r => /서버 실행/.test(r))).toHaveLength(0)
     await ui.unmount()
   }
   await w.clock.advance(5 * SEC)
@@ -2382,8 +2403,8 @@ test('with the last group ahead the count of hidden steps sits before its final 
   }
 })
 
-// B. 같은 설명의 백그라운드 명령과 보통 명령이 함께 돌아도 두 자리에 모두 보인다(같은 글은 자리마다 합친다).
-test('a background command and a running one with the same description both show, each in its place', async ($, on) => {
+// B. 같은 설명의 백그라운드 명령이 돌아도 보통 명령은 단계 아래에 한 줄로 보인다(백그라운드는 그리지 않는다).
+test('a background command with the same description does not hide the running one', async ($, on) => {
   const w = world(on)
   on('tool.call', { tool: 'Bash' }, async ($$, e) => {
     if ((e as unknown as { run_in_background?: boolean }).run_in_background) return { result: { backgroundTaskId: 't1' } }
@@ -2401,8 +2422,7 @@ test('a background command and a running one with the same description both show
   const ui = await $.ui.mount(pane('terminal'))
   const rows = await railRows(ui)
   expect(rows[rows.findIndex(r => /^◉ 사진 모으기/.test(r)) + 1]).toBe('┆ ▶ 테스트 실행')
-  expect(rows.at(-1)).toBe('┆ ▶ 테스트 실행')
-  expect(rows.filter(r => r === '┆ ▶ 테스트 실행')).toHaveLength(2)
+  expect(rows.filter(r => r === '┆ ▶ 테스트 실행')).toHaveLength(1)
   await ui.unmount()
   await w.clock.advance(5 * SEC)
   await call

@@ -658,7 +658,8 @@ async function syncTicker($: EngineInterface): Promise<void> {
   const b = await read($, board)
   const r = await read($, running)
   const al = await read($, alerts)
-  const fast = r.length > 0 || al.length > 0
+  // 백그라운드 작업은 그리지 않으므로 1초마다 다시 그릴 까닭이 없다.
+  const fast = r.some(x => !x.isBackground) || al.length > 0
   const ms = fast ? 1000 : b && leaves(b.steps).some(s => s.status === 'doing') ? 30_000 : 0
   if (ticker && ticker.ms === ms) return
   ticker?.timer.cancel()
@@ -938,6 +939,9 @@ export const register: Register = on => {
     await syncTicker($)
     const waits = WAITING.has(e.tool)
     if (waits) await rest($, t)
+    // TaskStop 으로 멈춘 백그라운드 작업은 끝 알림이 오지 않는다(2026-11-26 확인). 남아 있으면 시간을 계속 세므로 여기서 뺀다.
+    const args = e as unknown as Record<string, unknown>
+    const stops = e.tool === 'TaskStop' ? args.task_id ?? args.shell_id : undefined
     let taskId: string | undefined
     try {
       const r = await next(e)
@@ -945,7 +949,7 @@ export const register: Register = on => {
       return r
     } finally {
       const keep: Running[] = taskId ? [{ id, ...label, startedAt: t, isBackground: true, taskId }] : []
-      await update($, running, list => [...list.filter(x => x.id !== id), ...keep])
+      await update($, running, list => [...list.filter(x => x.id !== id && !(stops && x.taskId === stops)), ...keep])
       await syncTicker($)
       if (waits && !between) await wake($, await $.clock.now())
     }
@@ -1078,14 +1082,13 @@ export const register: Register = on => {
     }
 
     // 돌고 있는 명령: 진행 중 단계 아래에. 그런 단계가 없으면 맨 아래에.
+    // 백그라운드 명령·에이전트는 그리지 않는다. 패널은 단계만 보이면 된다(사용자가 정함, 2026-11-26). 시간 세기에만 쓴다.
     // 같은 글(같은 파일을 두 번 읽는 등)은 한 줄로.
-    const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
     const once = (list: Running[]) => list.filter((c, i) => list.findIndex(d => d.label === c.label) === i)
+    const visible = once(calls.filter(c => !c.isBackground && t - c.startedAt >= SHOW_AFTER_MS))
     const at = b ? callsAt(leaves(b.steps)) : undefined
-    // 백그라운드 명령은 늘 목록 맨 아래에(사용자가 정함, 2026-11-24). 진행 중 단계 아래에는 그 밖의 명령만.
-    // 같은 글은 자리마다 따로 합친다(같은 설명의 백그라운드 명령이 있어도 지금 도는 명령은 단계 아래에 보인다).
-    const hung = once(at ? visible.filter(c => !c.isBackground) : [])
-    const below = once(at ? visible.filter(c => c.isBackground) : visible)
+    const hung = at ? visible : []
+    const below = at ? [] : visible
 
     // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게), 이어서 그 단계에서 돌고 있는 명령.
     const hang = (l: Lead, step: Step): RenderChildren[] => {
