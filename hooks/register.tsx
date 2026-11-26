@@ -522,11 +522,14 @@ function callsAt(ls: Step[]): string | undefined {
   return at?.id
 }
 
+// 백그라운드로 띄운 일의 id. 명령은 backgroundTaskId, 에이전트는 status "async_launched"와 agentId 로 돌아온다.
+// 끝 알림의 <task-id> 에 이 id 가 들어 있다.
 function backgroundTaskOf(r: unknown): string | undefined {
   if (!r || typeof r !== 'object') return undefined
   const result = (r as { result?: unknown }).result
   if (!result || typeof result !== 'object') return undefined
-  const id = (result as Record<string, unknown>).backgroundTaskId
+  const o = result as Record<string, unknown>
+  const id = o.status === 'async_launched' ? o.agentId : o.backgroundTaskId
   return typeof id === 'string' && id ? id : undefined
 }
 
@@ -655,7 +658,8 @@ async function syncTicker($: EngineInterface): Promise<void> {
   const b = await read($, board)
   const r = await read($, running)
   const al = await read($, alerts)
-  const fast = r.length > 0 || al.length > 0
+  // 백그라운드 작업은 그리지 않으므로 1초마다 다시 그릴 까닭이 없다.
+  const fast = r.some(x => !x.isBackground) || al.length > 0
   const ms = fast ? 1000 : b && leaves(b.steps).some(s => s.status === 'doing') ? 30_000 : 0
   if (ticker && ticker.ms === ms) return
   ticker?.timer.cancel()
@@ -688,7 +692,10 @@ async function raise($: EngineInterface, fresh: { kind: AlertKind; text: string 
 }
 
 // Claude가 쉬기 시작함(일이 끝남, 질문·승인 창이 뜸). 이미 쉬는 중이면 그대로 둔다.
+// 백그라운드로 띄운 명령·에이전트가 돌고 있으면 일은 하는 중이라 멈추지 않는다(사용자가 정함, 2026-11-26).
+// 그 일이 끝나면 알림으로 새 턴이 열리고, 그 턴이 끝날 때 멈춘다.
 async function rest($: EngineInterface, t: number): Promise<void> {
+  if ((await read($, running)).some(r => r.isBackground)) return
   const b = await read($, board)
   if (!b || b.pausedSince !== undefined) return
   await save($, { ...b, pausedSince: t }, t)
@@ -726,7 +733,7 @@ async function pick(
 
   if (keys.includes(own)) {
     const saved = (await $.store.get(own)) as BoardEntry | undefined
-    if (saved?.board) picked = { board: saved.board, adopted: false }
+    if (saved?.board) picked = { board: stopped(saved), adopted: false }
   } else {
     let best: { key: string; saved: BoardEntry } | undefined
     for (const key of keys) {
@@ -736,15 +743,23 @@ async function pick(
       if (!best || saved.board.updatedAt > best.saved.board.updatedAt) best = { key, saved }
     }
     if (best) {
-      const moved: BoardEntry = { ...best.saved, sessionId: sid, lastSeen: t }
+      const taken = stopped(best.saved)
+      const moved: BoardEntry = { ...best.saved, sessionId: sid, lastSeen: t, board: taken }
       await $.store.set(own, moved)
       await $.store.delete(best.key)
-      picked = { board: best.saved.board, adopted: true }
+      picked = { board: taken, adopted: true }
     }
   }
 
   await prune($, own)
   return picked
+}
+
+// 저장소에서 꺼낸 목록은 그 창이 마지막으로 살아 있던 때에 멈춘 것으로 본다.
+// 백그라운드 작업이 돌던 채로 꺼진 창의 목록에는 쉬기 시작한 때가 없어, 꺼져 있던 시간까지 세게 된다.
+function stopped(saved: BoardEntry): Board {
+  const b = saved.board
+  return b.pausedSince === undefined ? { ...b, pausedSince: saved.lastSeen } : b
 }
 
 async function prune($: EngineInterface, own: string): Promise<void> {
@@ -823,7 +838,9 @@ export const register: Register = on => {
       if (e.reason === 'resume') {
         const key = `board:${me.root}:${me.sid}`
         const saved = (await $.store.get(key)) as BoardEntry | undefined
-        if (saved?.board) await $.store.set(key, { ...saved, lastSeen: 0 })
+        // 꺼진 창 표시(lastSeen 0)로는 언제 멈췄는지 알 수 없어, 쉬지 않던 목록은 떠나는 지금 멈춘다.
+        const t = await $.clock.now()
+        if (saved?.board) await $.store.set(key, { ...saved, lastSeen: 0, board: stopped({ ...saved, lastSeen: t }) })
       }
       await update($, board, () => null)
       pendingNotice = undefined
@@ -922,6 +939,9 @@ export const register: Register = on => {
     await syncTicker($)
     const waits = WAITING.has(e.tool)
     if (waits) await rest($, t)
+    // TaskStop 으로 멈춘 백그라운드 작업은 끝 알림이 오지 않는다(2026-11-26 확인). 남아 있으면 시간을 계속 세므로 여기서 뺀다.
+    const args = e as unknown as Record<string, unknown>
+    const stops = e.tool === 'TaskStop' ? args.task_id ?? args.shell_id : undefined
     let taskId: string | undefined
     try {
       const r = await next(e)
@@ -929,14 +949,15 @@ export const register: Register = on => {
       return r
     } finally {
       const keep: Running[] = taskId ? [{ id, ...label, startedAt: t, isBackground: true, taskId }] : []
-      await update($, running, list => [...list.filter(x => x.id !== id), ...keep])
+      await update($, running, list => [...list.filter(x => x.id !== id && !(stops && x.taskId === stops)), ...keep])
       await syncTicker($)
       if (waits && !between) await wake($, await $.clock.now())
     }
   }).catch(($, e, next) => next(e)) // 기록이 실패해도 도구는 그대로 돈다(이미 돌았으면 그 결과를 그대로).
 
   // Claude가 일하는 동안만 시간을 센다: 턴이 끝나면 멈추고, 다음 턴이 시작하면 다시 센다.
-  // 창이 꺼져 있던 시간도 마지막 턴 끝에서 멈춘 채로 저장되어 빠진다.
+  // 백그라운드 작업이 돌고 있으면 턴이 끝나도 멈추지 않는다(rest).
+  // 창이 꺼져 있던 시간도 마지막 턴 끝(백그라운드 작업 중이면 마지막으로 살아 있던 때)에서 멈춘 채로 빠진다.
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     between = false
@@ -945,7 +966,16 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e)) // 실패해도 턴은 그대로 돈다.
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) return next(e)
+    if (e.agentId !== undefined) {
+      // 백그라운드 에이전트의 실행이 끝남. 끝 알림은 다음 입력에 붙어 늦게 올 수 있어(2026-11-26 확인) 여기서 뺀다.
+      const id = e.agentId
+      if ((await read($, running)).some(r => r.taskId === id)) {
+        await update($, running, list => list.filter(r => r.taskId !== id))
+        await syncTicker($)
+        if (between) await rest($, await $.clock.now())
+      }
+      return next(e)
+    }
     between = true
     await rest($, await $.clock.now())
     return next(e)
@@ -1061,14 +1091,13 @@ export const register: Register = on => {
     }
 
     // 돌고 있는 명령: 진행 중 단계 아래에. 그런 단계가 없으면 맨 아래에.
+    // 백그라운드 명령·에이전트는 그리지 않는다. 패널은 단계만 보이면 된다(사용자가 정함, 2026-11-26). 시간 세기에만 쓴다.
     // 같은 글(같은 파일을 두 번 읽는 등)은 한 줄로.
-    const visible = calls.filter(c => t - c.startedAt >= SHOW_AFTER_MS)
     const once = (list: Running[]) => list.filter((c, i) => list.findIndex(d => d.label === c.label) === i)
+    const visible = once(calls.filter(c => !c.isBackground && t - c.startedAt >= SHOW_AFTER_MS))
     const at = b ? callsAt(leaves(b.steps)) : undefined
-    // 백그라운드 명령은 늘 목록 맨 아래에(사용자가 정함, 2026-11-24). 진행 중 단계 아래에는 그 밖의 명령만.
-    // 같은 글은 자리마다 따로 합친다(같은 설명의 백그라운드 명령이 있어도 지금 도는 명령은 단계 아래에 보인다).
-    const hung = once(at ? visible.filter(c => !c.isBackground) : [])
-    const below = once(at ? visible.filter(c => c.isBackground) : visible)
+    const hung = at ? visible : []
+    const below = at ? [] : visible
 
     // 한 단계 아래에 붙는 줄: 메모(막힘이면 노랑, 아니면 흐리게), 이어서 그 단계에서 돌고 있는 명령.
     const hang = (l: Lead, step: Step): RenderChildren[] => {
