@@ -1463,7 +1463,7 @@ test('time on a question is counted while a background agent runs', async ($, on
   const w = world(on)
   on('tool.call', AGENT, () => ({ result: { status: 'async_launched', agentId: 'job1' } }))
   on('tool.call', { tool: 'AskUserQuestion' } as const, async () => {
-    await w.clock.sleep(10 * MIN)
+    await w.clock.sleep(2 * MIN)
     return { result: {} }
   })
   await $.session.start(START)
@@ -1472,16 +1472,17 @@ test('time on a question is counted while a background agent runs', async ($, on
   await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
   await w.clock.advance(1 * MIN)
   await launchAgent($)
+  // 질문 창이 떠 있는 동안은 1초마다 다시 그려 테스트가 느리다. 질문은 2분만(10분이면 바쁠 때 5초 한도를 넘었다).
   const call = $.tool.call({ tool: 'AskUserQuestion', questions: [] } as unknown as CallInput)
   await w.clock.settle()
-  await w.clock.advance(10 * MIN)
+  await w.clock.advance(2 * MIN)
   await call
   // 그리지 않는 백그라운드 작업만 남으면 30초마다 다시 그린다. 다음 그리기까지.
   await w.clock.advance(30 * SEC)
 
   // 질문 창 동안 쉬었다면 1분째에 머문다.
   const ui = await $.ui.mount(pane('terminal'))
-  expect(await ui.find({ type: 'Text', text: /◉ 사진 모으기.*11분째$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /◉ 사진 모으기 +3분째$/ })).toBeDefined()
   await ui.unmount()
 })
 
