@@ -522,11 +522,14 @@ function callsAt(ls: Step[]): string | undefined {
   return at?.id
 }
 
+// 백그라운드로 띄운 일의 id. 명령은 backgroundTaskId, 에이전트는 status "async_launched"와 agentId 로 돌아온다.
+// 끝 알림의 <task-id> 에 이 id 가 들어 있다.
 function backgroundTaskOf(r: unknown): string | undefined {
   if (!r || typeof r !== 'object') return undefined
   const result = (r as { result?: unknown }).result
   if (!result || typeof result !== 'object') return undefined
-  const id = (result as Record<string, unknown>).backgroundTaskId
+  const o = result as Record<string, unknown>
+  const id = o.status === 'async_launched' ? o.agentId : o.backgroundTaskId
   return typeof id === 'string' && id ? id : undefined
 }
 
@@ -688,7 +691,10 @@ async function raise($: EngineInterface, fresh: { kind: AlertKind; text: string 
 }
 
 // Claude가 쉬기 시작함(일이 끝남, 질문·승인 창이 뜸). 이미 쉬는 중이면 그대로 둔다.
+// 백그라운드로 띄운 명령·에이전트가 돌고 있으면 일은 하는 중이라 멈추지 않는다(사용자가 정함, 2026-11-26).
+// 그 일이 끝나면 알림으로 새 턴이 열리고, 그 턴이 끝날 때 멈춘다.
 async function rest($: EngineInterface, t: number): Promise<void> {
+  if ((await read($, running)).some(r => r.isBackground)) return
   const b = await read($, board)
   if (!b || b.pausedSince !== undefined) return
   await save($, { ...b, pausedSince: t }, t)
@@ -726,7 +732,7 @@ async function pick(
 
   if (keys.includes(own)) {
     const saved = (await $.store.get(own)) as BoardEntry | undefined
-    if (saved?.board) picked = { board: saved.board, adopted: false }
+    if (saved?.board) picked = { board: stopped(saved), adopted: false }
   } else {
     let best: { key: string; saved: BoardEntry } | undefined
     for (const key of keys) {
@@ -736,15 +742,23 @@ async function pick(
       if (!best || saved.board.updatedAt > best.saved.board.updatedAt) best = { key, saved }
     }
     if (best) {
-      const moved: BoardEntry = { ...best.saved, sessionId: sid, lastSeen: t }
+      const taken = stopped(best.saved)
+      const moved: BoardEntry = { ...best.saved, sessionId: sid, lastSeen: t, board: taken }
       await $.store.set(own, moved)
       await $.store.delete(best.key)
-      picked = { board: best.saved.board, adopted: true }
+      picked = { board: taken, adopted: true }
     }
   }
 
   await prune($, own)
   return picked
+}
+
+// 저장소에서 꺼낸 목록은 그 창이 마지막으로 살아 있던 때에 멈춘 것으로 본다.
+// 백그라운드 작업이 돌던 채로 꺼진 창의 목록에는 쉬기 시작한 때가 없어, 꺼져 있던 시간까지 세게 된다.
+function stopped(saved: BoardEntry): Board {
+  const b = saved.board
+  return b.pausedSince === undefined ? { ...b, pausedSince: saved.lastSeen } : b
 }
 
 async function prune($: EngineInterface, own: string): Promise<void> {
@@ -823,7 +837,9 @@ export const register: Register = on => {
       if (e.reason === 'resume') {
         const key = `board:${me.root}:${me.sid}`
         const saved = (await $.store.get(key)) as BoardEntry | undefined
-        if (saved?.board) await $.store.set(key, { ...saved, lastSeen: 0 })
+        // 꺼진 창 표시(lastSeen 0)로는 언제 멈췄는지 알 수 없어, 쉬지 않던 목록은 떠나는 지금 멈춘다.
+        const t = await $.clock.now()
+        if (saved?.board) await $.store.set(key, { ...saved, lastSeen: 0, board: stopped({ ...saved, lastSeen: t }) })
       }
       await update($, board, () => null)
       pendingNotice = undefined
@@ -936,7 +952,8 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e)) // 기록이 실패해도 도구는 그대로 돈다(이미 돌았으면 그 결과를 그대로).
 
   // Claude가 일하는 동안만 시간을 센다: 턴이 끝나면 멈추고, 다음 턴이 시작하면 다시 센다.
-  // 창이 꺼져 있던 시간도 마지막 턴 끝에서 멈춘 채로 저장되어 빠진다.
+  // 백그라운드 작업이 돌고 있으면 턴이 끝나도 멈추지 않는다(rest).
+  // 창이 꺼져 있던 시간도 마지막 턴 끝(백그라운드 작업 중이면 마지막으로 살아 있던 때)에서 멈춘 채로 빠진다.
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     between = false
