@@ -1485,6 +1485,27 @@ test('time on a question is counted while a background agent runs', async ($, on
   await ui.unmount()
 })
 
+// 백그라운드 에이전트의 끝 알림은 다음 입력에 붙어 늦게 올 수 있다(2026-11-26 화면에서 확인).
+// 에이전트의 실행이 끝나는 turn.complete(agentId)에서 빼고, Claude가 쉬는 중이면 그때 멈춘다.
+test('a background agent that finished its run stops the time even before its notice', async ($, on) => {
+  const w = world(on)
+  on('tool.call', AGENT, () => ({ result: { status: 'async_launched', agentId: 'job1' } }))
+  await $.session.start(START)
+  await turnStart($)
+  await $.tool.call(tool(PLAN))
+  await $.tool.call(tool({ action: 'update', id: 'a', status: 'doing' }))
+  await w.clock.advance(2 * MIN)
+  await launchAgent($)
+  await turnEnd($)
+  await w.clock.advance(10 * MIN)
+  await $.turn.complete({ answer: '끝', durationMs: 0, isAborted: false, turnId: 'sub', reason: 'answer', agentId: 'job1' })
+  await w.clock.advance(30 * MIN)
+
+  const ui = await $.ui.mount(pane('terminal'))
+  expect(await ui.find({ type: 'Text', text: /◉ 사진 모으기 +12분째$/ })).toBeDefined()
+  await ui.unmount()
+})
+
 // TaskStop 으로 멈춘 작업은 끝 알림이 오지 않는다(2026-11-26 화면에서 확인). 남아 있으면 시간이 멈추지 않는다.
 test('a background task stopped with TaskStop no longer keeps the time running', async ($, on) => {
   const w = world(on)

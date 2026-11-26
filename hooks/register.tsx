@@ -966,7 +966,16 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e)) // 실패해도 턴은 그대로 돈다.
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) return next(e)
+    if (e.agentId !== undefined) {
+      // 백그라운드 에이전트의 실행이 끝남. 끝 알림은 다음 입력에 붙어 늦게 올 수 있어(2026-11-26 확인) 여기서 뺀다.
+      const id = e.agentId
+      if ((await read($, running)).some(r => r.taskId === id)) {
+        await update($, running, list => list.filter(r => r.taskId !== id))
+        await syncTicker($)
+        if (between) await rest($, await $.clock.now())
+      }
+      return next(e)
+    }
     between = true
     await rest($, await $.clock.now())
     return next(e)
